@@ -26,7 +26,7 @@ import {
   type InstagramMcpClient,
   getSharedMcpClient,
   getSharedMcpService,
-} from 'dsh-instagram-mcp'
+} from '@luoyi-dsh/instagram-mcp'
 
 export const name = 'instagram-plugin'
 export const inject = ['webServer', 'tools']

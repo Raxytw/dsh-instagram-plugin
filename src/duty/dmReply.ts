@@ -11,7 +11,7 @@
 
 import { InstagramPluginConfig } from '../config.js'
 import { LedgerManager } from '../lib/ledger.js'
-import type { InstagramMcpClient } from 'dsh-instagram-mcp'
+import type { InstagramMcpClient } from '@luoyi-dsh/instagram-mcp'
 
 export interface DmReplyDutyResult {
   ok: boolean

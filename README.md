@@ -1,22 +1,46 @@
-# DSH Instagram 業務插件 (`@luoyi-dsh/instagram-plugin`)
+# DSH Instagram Business & Automation Duties Plugin (`@luoyi-dsh/instagram-plugin`)
+
+<div align="center">
 
 ![DSH Instagram Plugin Banner](assets/banner.png)
 
-依賴 `@luoyi-dsh/instagram-mcp` 的 FastMCP 連線與登入憑證。這個插件負責兩大核心能力：
-1. **安全唯讀瀏覽與探索 (Read-Only Browsing)**：刷指定創作者貼文、刷 Reels 短片、探索首頁動態、搜尋用戶與標籤（不按讚、不發文、不留痕跡）。
-2. **自動化社群互動助理 (Automation Duties)**：標籤巡查推坑、貼文 @提及應答、代回未讀私訊。
+**[English](README.md) | [繁體中文](README.zh-Hant.md)**
 
-Web 設定與瀏覽介面位於 DSH 的 `client.js`。
+</div>
+
+> Relies on `@luoyi-dsh/instagram-mcp` for FastMCP connectivity and authentication credentials.  
+> This plugin provides two core operational capabilities:  
+> 1. **Safe Read-Only Browsing & Exploration**: Browse creator posts, Reels short videos, explore timeline feeds, and search users/tags without liking, posting, or triggering account risk.  
+> 2. **Automated Social Duties**: Background hashtag patrol with smart recommendation comments, @mention reasoning and answer assistant, and unread Direct Message (DM) management.  
+>
+> Fully inherits session state from `@luoyi-dsh/instagram-mcp` with zero duplicated credentials. The web management console is available via `client.js`.
 
 ---
 
-## 唯讀瀏覽與探索 API (純讀不發文)
+## 🚀 Installation
 
-### 1. 讀取指定創作者貼文 (User Posts)
+Install via DSH Plugin CLI:
+
+```bash
+dsh plugin --profile web add @luoyi-dsh/instagram-plugin
+```
+
+Or via standard npm:
+
+```bash
+npm install @luoyi-dsh/instagram-plugin
+```
+
+---
+
+## 🔍 Read-Only Browsing & Exploration API (Pure Read, No Footprint)
+
+### 1. Retrieve Creator Posts (User Posts)
 ```bash
 curl "http://127.0.0.1:3080/api/instagram/browse/user?username=wired&limit=5"
 ```
-**回傳格式：**
+
+**Response Format:**
 ```json
 {
   "ok": true,
@@ -51,129 +75,124 @@ curl "http://127.0.0.1:3080/api/instagram/browse/user?username=wired&limit=5"
 }
 ```
 
-### 2. 刷 Reels 連續短片 (Reels Feed)
-- **探索熱門推薦 Reels**：
+### 2. Browse Reels Short Videos (Reels Feed)
+- **Explore Recommended Reels**:
   ```bash
   curl "http://127.0.0.1:3080/api/instagram/browse/reels?limit=6"
   ```
-- **指定創作者的 Reels**：
+- **Reels from Specific Creator**:
   ```bash
   curl "http://127.0.0.1:3080/api/instagram/browse/reels?username=wired&limit=6"
   ```
 
-### 3. 首頁動態探索 (Explore Timeline)
+### 3. Explore Timeline (Explore Feed)
 ```bash
 curl "http://127.0.0.1:3080/api/instagram/browse/explore?limit=6"
 ```
 
-### 4. 搜尋用戶與標籤 (Search)
-- **搜尋使用者**：
+### 4. Search Users & Hashtags
+- **Search Users**:
   ```bash
   curl "http://127.0.0.1:3080/api/instagram/browse/search?q=verge&type=users"
   ```
-- **搜尋主題標籤**：
+- **Search Hashtags**:
   ```bash
   curl "http://127.0.0.1:3080/api/instagram/browse/search?q=technology&type=tags"
   ```
 
 ---
 
-## 業務與自動化 API
+## ⚡ Business & Automation REST API
 
-### 1. 檢查目前狀態與登入帳號
+### 1. Check Status & Active Account
 ```bash
 curl http://127.0.0.1:3080/api/instagram/status
 ```
-重點欄位：
-- `loginStatus.ok`: 是否已登入
-- `loginStatus.username`: 當前登入的真實 Instagram Handle（如 `your_account`）
-- `loginStatus.message`: 登入狀態說明與憑證來源
-- `sessionPath`: 當前生效的 Session 檔案實體路徑
+Key response fields:
+- `loginStatus.ok`: Whether logged in.
+- `loginStatus.username`: Active authenticated Instagram handle.
+- `loginStatus.message`: Description of session source and state.
+- `inheritedSession`: Indicates credentials are automatically inherited from `@luoyi-dsh/instagram-mcp`.
 
-### 2. 驗證 Session 或登入帳號
+### 2. Synchronize Inherited Session
 ```bash
 curl -X POST http://127.0.0.1:3080/api/instagram/login \
   -H "Content-Type: application/json" \
-  -d "{\"username\":\"你的帳號\",\"password\":\"你的密碼\"}"
+  -d "{}"
 ```
 
-### 3. 立即手動執行一輪自動化循環 (注意：會執行留言與推坑)
+### 3. Trigger Automation Duty Round Manually
 ```bash
 curl -X POST http://127.0.0.1:3080/api/instagram/run \
   -H "Content-Type: application/json" \
   -d "{}"
 ```
-*提示：若僅需「瀏覽貼文／短片」，請使用上方 `/api/instagram/browse/*` 端點，不要使用 `/run`。*
 
 ---
 
-## 插件工具清單 (向 DSH 註冊之 Tool)
+## 🛠️ Provided DSH Tools
 
-| 工具名稱 | 類型 | 說明 | 關鍵參數 |
+| Tool Name | Type | Description | Key Parameters |
 | :--- | :--- | :--- | :--- |
-| `ig_browse_user_posts` | **唯讀** | 讀取指定創作者的最新貼文，包含個人檔案與聯名作者解析 | `username` (必填), `limit` |
-| `ig_browse_reels` | **唯讀** | 刷 Reels 短片（可指定創作者或探索推薦） | `username` (可選), `limit` |
-| `ig_browse_timeline` | **唯讀** | 讀取首頁動態探索貼文流 | `limit` |
-| `ig_search_users` | **唯讀** | 搜尋 Instagram 使用者（回傳粉絲數、認證標章） | `query` (必填), `limit` |
-| `ig_search_tags` | **唯讀** | 搜尋 Instagram 標籤（回傳公開貼文總量） | `query` (必填), `limit` |
-| `ig_check_status` | 資訊 | 取得外掛程式連線狀態、登入用戶名與配額 | 無 |
-| `ig_login` | 認證 | 驗證既有 Session 或重新以帳密登入 | `username`, `password`, `two_factor_code` |
-| `ig_search_hashtag` | 查詢 | 查詢指定標籤最新貼文（官方 API 受限時回傳診斷提示） | `hashtag` (必填), `limit` |
-| `ig_get_post_context` | 唯讀 | 取得特定貼文之全文與留言清單 | `media_pk` (必填), `comment_limit` |
-| `ig_manual_patrol` | 寫入 | 立即執行標籤巡查（若達門檻將發表推薦留言） | `hashtag` (可選) |
-| `ig_manual_reply_post` | 寫入 | 對指定貼文發表新留言或回覆特定留言 | `media_pk`, `text`, `reply_to_comment_pk` |
-| `ig_manual_send_dm` | 寫入 | 對私訊對話發送訊息 | `thread_id`, `text` |
-| `ig_run_duties_now` | 寫入 | 巡查、提及回覆、私訊各執行一輪 | 無 |
+| `ig_browse_user_posts` | **Read-Only** | Read latest posts by creator with full author bio and collaborative partners. | `username` (required), `limit` |
+| `ig_browse_reels` | **Read-Only** | Browse Reels short videos (explore or creator-specific). | `username` (optional), `limit` |
+| `ig_browse_timeline` | **Read-Only** | Explore top posts from timeline discovery feed. | `limit` |
+| `ig_search_users` | **Read-Only** | Search Instagram users (returns follower count and verified badge). | `query` (required), `limit` |
+| `ig_search_tags` | **Read-Only** | Search Instagram hashtags (returns media count). | `query` (required), `limit` |
+| `ig_check_status` | Status | Get connection status, active username, and quota ledger. | None |
+| `ig_search_hashtag` | Query | Query latest posts under a hashtag. | `hashtag` (required), `limit` |
+| `ig_get_post_context` | Read-Only | Fetch post full caption and comments list. | `media_pk` (required), `comment_limit` |
+| `ig_manual_patrol` | Duty | Perform hashtag patrol immediately (leaves recommendation comments if threshold met). | `hashtag` (optional) |
+| `ig_manual_reply_post` | Duty | Publish a comment or reply to an existing comment. | `media_pk`, `text`, `reply_to_comment_pk` |
+| `ig_manual_send_dm` | Duty | Send message to a direct message thread. | `thread_id`, `text` |
+| `ig_run_duties_now` | Duty | Run a complete round of patrol, mentions, and DMs. | None |
 
 ---
 
-## Web 前端控制面板 (`client.js`)
+## 🎨 Web Control Panel (`client.js`)
 
-前端面板遵循 `.agents/skills/design-taste-frontend` 規範，提供六大專屬分頁：
-1. **帳號與認證**：顯示真實已登入的 `@handle` 與 Session 狀態，管理登入參數。
-2. **瀏覽與探索**：
-   - **連續短片 (Reels)**：刷短片封面、播放連結與發布資訊。
-   - **創作者主頁貼文**：輸入帳號（如 `wired`, `verge`），完整呈現個人 Bio、粉絲數、公開貼文卡片與聯名合作標記。
-   - **首頁動態探索**：一鍵瀏覽探索動態。
-   - **搜尋 用戶/標籤**：搜尋創作者並可一鍵跳轉瀏覽其主頁。
-3. **標籤巡查推坑**：設定巡查主題標籤、LLM 人設 Prompt、推薦推坑模板。
-4. **提及應答**：設定 @機器人 提問的自動回答策略與黑白名單。
-5. **私訊互動**：代回 Instagram 未讀私訊。
-6. **運行與統計**：每日額度進度條（KPI Cards，支援 `tabular-nums`）與手動觸發。
-
----
-
-## 常見排查與問答
-
-### Q1：為什麼查詢 `theverge` 貼文數是 0，而 `wired` 正常？
-- **解答**：`theverge` 在 Instagram 上是一個沒有任何貼文的空帳號（佔位號），其 `media_count` 為 0。知名科技媒體 The Verge 的真實官方 Instagram 帳號名是 **`verge`**（擁有 6,400+ 篇貼文）。查詢時頂部名片會即時顯示該帳號的真實貼文總數，並提出診斷提醒。
-
-### Q2：為什麼在 `techcrunch` 的結果中，作者卻顯示為 `@dominicmadori`？
-- **解答**：這是 Instagram 官方的「聯名發布 (Collaborative Posts)」機制。此貼文由 TechCrunch 與作者 Dominic Madori 共同發布，Instagram 官方 API 會將主要作者設為 `dominicmadori`，並在 `coauthor_producers` 中列出 `techcrunch`。卡片上會明確以 `[聯名發布] @dominicmadori × @techcrunch` 呈現，不會再造成混淆。
-
-### Q3：為什麼標籤搜尋 `#technology` 一直抓不到貼文？
-- **解答**：Instagram 近期大幅收緊公開 Hashtag 的 API 存取權限。非商業驗證節點直接查詢標籤端點多半會被 Instagram 限制並回傳空資料。建議改用「創作者主頁 (User Posts)」直接訂閱知名媒體或帳號，或是透過「連續短片 (Reels)」獲取最新熱門短片。
+The web UI provides six dedicated sections:
+1. **Identity & MCP Session**: Live status inherited from `@luoyi-dsh/instagram-mcp`, target user configuration, and bot identity.
+2. **Browse & Explore**:
+   - **Reels**: Video covers, view links, and metadata.
+   - **Creator Profiles**: Profile bios, follower counts, verified badges, and collaborative tags.
+   - **Explore Feed**: One-click exploration stream.
+   - **Search**: Interactive user and hashtag search with direct profile navigation.
+3. **Hashtag Patrol**: Topic tags, LLM persona prompts, and recommendation templates.
+4. **Mention Reply**: Automatic answer rules and whitelists/blacklists for @mentions.
+5. **Direct Messages**: Unread DM assistance.
+6. **Execution & Metrics**: KPI cards with daily quotas and manual duty triggers.
 
 ---
 
-## 資料目錄與動態持久化架構
+## 📁 Directory Structure
 
-本外掛採用完全解耦的執行期動態初始化架構，不依賴任何隨套件分發的靜態資料檔：
-
-```
+```text
 dsh-instagram-plugin/
-├── client.js              # 前端 Web UI 控制面板
-├── cordis.patch.yml       # DSH Cordis 插件聲明
-├── dist/                  # 編譯後之 JavaScript 產物
-├── src/                   # TypeScript 源代碼
-└── data/                  # 【執行期動態建立，不進 Git / NPM】
-    ├── config.json        # 外掛持久化配置（自動根據默認值產生）
-    ├── ledger.json        # 狀態去重與每日配額帳本（自動初始化）
-    └── ig_session.json    # Instagram Session 憑證
+├── client.js              # Web UI dashboard
+├── cordis.patch.yml       # DSH Cordis bundle patch
+├── package.json           # Module definitions
+├── tsconfig.json          # TypeScript compiler configuration
+├── CHANGELOG.md           # Version release notes
+├── README.md              # English documentation (This file)
+├── README.zh-Hant.md      # Traditional Chinese documentation
+├── assets/
+│   ├── banner.png         # Promotional banner
+│   └── zh-Hant.md         # Localized documentation
+├── src/                   # TypeScript source code
+└── data/                  # [Runtime generated, ignored in Git]
+    ├── config.json        # Plugin persistent configuration
+    └── ledger.json        # Deduplication and quota ledger
 ```
 
-- **安裝方式**：
-  ```bash
-  npm install @luoyi-dsh/instagram-plugin
-  ```
-- **初始化**：初次由 DSH 載入時，將自動建立 `data/` 與預設設定，即可在 DSH 介面或前端設定面板立即進行配置。
+---
+
+## 📜 Releases & Changelog
+
+For detailed release history and changes, please refer to [CHANGELOG.md](CHANGELOG.md).
+
+---
+
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).

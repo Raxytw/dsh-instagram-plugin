@@ -9,13 +9,18 @@
  */
 
 export interface InstagramPluginConfig {
-  // === 1. 認證與身份 ===
-  username: string
-  password?: string
-  twoFactorCode?: string
-  sessionPath: string
+  // === 1. 身份與目標 (認證憑證與 Session 統一由 @luoyi-dsh/instagram-mcp 管理) ===
   botUsername: string
   targetMentionUser: string
+  /** @deprecated 已遷移至 @luoyi-dsh/instagram-mcp，保留以相容舊設定檔 */
+  username?: string
+  /** @deprecated 已遷移至 @luoyi-dsh/instagram-mcp，保留以相容舊設定檔 */
+  password?: string
+  /** @deprecated 已遷移至 @luoyi-dsh/instagram-mcp，保留以相容舊設定檔 */
+  twoFactorCode?: string
+  /** @deprecated 已遷移至 @luoyi-dsh/instagram-mcp，保留以相容舊設定檔 */
+  sessionPath?: string
+  /** @deprecated 已遷移至 @luoyi-dsh/instagram-mcp，保留以相容舊設定檔 */
   proxyUrl?: string
 
   // === 2. 背景巡查與推薦詳細條件 (Patrol Duty) ===
@@ -50,21 +55,15 @@ export interface InstagramPluginConfig {
   dmDailyCap: number
   dmPersonaPrompt: string
 
-  // === 5. 安全防風控與執行環境 ===
+  // === 5. 安全防風控 ===
   jitterMinSeconds: number
   jitterMaxSeconds: number
-  pythonPath: string
 }
 
 export const defaultConfig: InstagramPluginConfig = {
-  // 1. 認證與身份
-  username: '',
-  password: '',
-  twoFactorCode: '',
-  sessionPath: 'data/ig_session.json',
+  // 1. 身份與目標
   botUsername: '',
   targetMentionUser: '',
-  proxyUrl: '',
 
   // 2. 背景巡查與推薦
   patrolEnabled: true,
@@ -101,7 +100,6 @@ export const defaultConfig: InstagramPluginConfig = {
   // 5. 安全防風控
   jitterMinSeconds: 3,
   jitterMaxSeconds: 6,
-  pythonPath: '',
 }
 
 /**
@@ -122,14 +120,10 @@ export function unwrapValue<T>(val: any, fallback: T): T {
 
 export function sanitizeConfig(raw: any): InstagramPluginConfig {
   const c = raw || {}
+  const botUser = unwrapValue(c.botUsername, unwrapValue(c.username, defaultConfig.botUsername))
   return {
-    username: unwrapValue(c.username, defaultConfig.username),
-    password: unwrapValue(c.password, defaultConfig.password),
-    twoFactorCode: unwrapValue(c.twoFactorCode, defaultConfig.twoFactorCode),
-    sessionPath: unwrapValue(c.sessionPath, defaultConfig.sessionPath) || 'data/ig_session.json',
-    botUsername: unwrapValue(c.botUsername, defaultConfig.botUsername),
+    botUsername: botUser,
     targetMentionUser: unwrapValue(c.targetMentionUser, defaultConfig.targetMentionUser),
-    proxyUrl: unwrapValue(c.proxyUrl, defaultConfig.proxyUrl),
 
     patrolEnabled: unwrapValue(c.patrolEnabled, defaultConfig.patrolEnabled),
     patrolIntervalMinutes: unwrapValue(c.patrolIntervalMinutes, defaultConfig.patrolIntervalMinutes),
@@ -162,7 +156,6 @@ export function sanitizeConfig(raw: any): InstagramPluginConfig {
 
     jitterMinSeconds: unwrapValue(c.jitterMinSeconds, defaultConfig.jitterMinSeconds),
     jitterMaxSeconds: unwrapValue(c.jitterMaxSeconds, defaultConfig.jitterMaxSeconds),
-    pythonPath: unwrapValue(c.pythonPath, defaultConfig.pythonPath),
   }
 }
 
@@ -175,14 +168,9 @@ export function buildConfigSchema(z: any) {
   }
 
   return z.object({
-    // === 認證與身份 ===
-    username: z.string().default('').description('Instagram 登入帳號').extra('volatile', true),
-    password: z.string().role('secret').default('').description('Instagram 登入密碼（已有有效 Session 可留空）').extra('volatile', true),
-    twoFactorCode: z.string().default('').description('2FA 雙重驗證代碼（遇驗證碼挑戰時填寫）').extra('volatile', true),
-    sessionPath: z.string().default('data/ig_session.json').description('Session 憑證持久化路徑').extra('volatile', true),
-    botUsername: z.string().default('').description('機器人自身的 Instagram 帳號名（用於精準比對評論區被 @ 的提問）').extra('volatile', true),
+    // === 身份識別 (帳號密碼與 Session 由 @luoyi-dsh/instagram-mcp 核心服務提供) ===
+    botUsername: z.string().default('').description('機器人自身的 Instagram 帳號名（留空時自動沿用 MCP 登入之帳號）').extra('volatile', true),
     targetMentionUser: z.string().default('').description('推坑目標用戶帳號（巡查發現優質貼文時 @目標用戶）').extra('volatile', true),
-    proxyUrl: z.string().default('').description('HTTP / SOCKS5 代理伺服器 URL（降低 IP 封鎖風險）').extra('volatile', true),
 
     // === 背景巡查與推薦 ===
     patrolEnabled: z.boolean().default(true).description('是否開啟標籤背景巡查與推坑').extra('volatile', true),
@@ -216,9 +204,8 @@ export function buildConfigSchema(z: any) {
     dmDailyCap: z.natural().default(30).description('全域每日私訊回覆總上限').extra('volatile', true),
     dmPersonaPrompt: z.string().role('textarea').default(defaultConfig.dmPersonaPrompt).description('私訊專用回覆口吻 Prompt').extra('volatile', true),
 
-    // === 安全防風控與執行環境 ===
+    // === 安全防風控 ===
     jitterMinSeconds: z.number().default(3).description('動作前隨機抖動最小等待秒數').extra('volatile', true),
     jitterMaxSeconds: z.number().default(6).description('動作前隨機抖動最大等待秒數').extra('volatile', true),
-    pythonPath: z.string().default('').description('指定 Python 可執行檔路徑（留空則自動偵測）').extra('volatile', true),
   })
 }

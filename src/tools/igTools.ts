@@ -54,29 +54,20 @@ export function registerIgTools(
           }
         }
 
-        let sessionValid = false
-        let sessionMsg = '未測試'
-        try {
-          const loginRes = await mcp.igLogin({
-            session_path: toStr(config.sessionPath, 'data/ig_session.json') || 'data/ig_session.json',
-            proxy_url: toStr(config.proxyUrl, ''),
-          })
-          sessionValid = Boolean(loginRes?.ok)
-          sessionMsg = loginRes?.message || (sessionValid ? 'Session 有效' : '需重新登入')
-        } catch (e: any) {
-          sessionMsg = `連線檢查異常: ${e.message}`
-        }
+        const svc = (globalThis as any).__DSH_INSTAGRAM_MCP__
+        const sessionValid = Boolean(svc?.loginStatus?.ok)
+        const sessionMsg = svc?.loginStatus?.message || (mcp?.ready ? 'MCP 運行中，等待登入' : '等待 MCP 連線')
 
         const stats = ledger.getDailyStats()
         return {
           ok: true,
           mcpConnected: true,
+          sessionInherited: true,
           sessionValid,
           sessionStatus: sessionMsg,
           dailyStats: stats,
           configSnapshot: {
-            username: toStr(config.username, ''),
-            botUsername: toStr(config.botUsername, ''),
+            botUsername: toStr(config.botUsername, svc?.loginStatus?.username || ''),
             targetMentionUser: toStr(config.targetMentionUser, ''),
             patrolEnabled: Boolean(config.patrolEnabled),
             mentionReplyEnabled: Boolean(config.mentionReplyEnabled),
@@ -146,40 +137,6 @@ export function registerIgTools(
       },
     },
 
-    {
-      name: 'ig_login',
-      description: '手動登入 Instagram 帳號或載入 Session 憑證',
-      parameters: {
-        type: 'object',
-        properties: {
-          username: { type: 'string', description: 'Instagram 使用者帳號（若已有 Session 可留空）' },
-          password: { type: 'string', description: 'Instagram 登入密碼（若已有 Session 可留空）' },
-          two_factor_code: { type: 'string', description: '2FA 雙重驗證代碼（遇驗證碼挑戰時提供）' },
-          proxy_url: { type: 'string', description: '可選：代理伺服器 URL' },
-        },
-        additionalProperties: false,
-      },
-      execute: async (args: { username?: string; password?: string; two_factor_code?: string; proxy_url?: string }) => {
-        const mcp = getMcp()
-        if (!mcp || !mcp.isRunning) {
-          return { ok: false, error: 'Instagram MCP 服務尚未就緒，請稍候' }
-        }
-        const u = toStr(args.username, toStr(config.username, ''))
-        const p = toStr(args.password, toStr(config.password, ''))
-        const s = toStr(config.sessionPath, 'data/ig_session.json') || 'data/ig_session.json'
-        const t2fa = toStr(args.two_factor_code, toStr(config.twoFactorCode, ''))
-        const proxy = toStr(args.proxy_url, toStr(config.proxyUrl, ''))
-        log(`[Tools] 嘗試登入帳號: ${u || '使用預設 Session'}`)
-        const res = await mcp.igLogin({
-          username: u,
-          password: p,
-          session_path: s,
-          two_factor_code: t2fa,
-          proxy_url: proxy,
-        })
-        return res
-      },
-    },
 
     {
       name: 'ig_manual_patrol',
@@ -484,6 +441,12 @@ export function registerIgTools(
       ...rawTool,
       output: {
         schema: { type: 'object' },
+        render: (_args: any, value: any) => [
+          {
+            type: 'text',
+            text: typeof value === 'string' ? value : JSON.stringify(value, null, 2),
+          },
+        ],
       },
     }
     try {

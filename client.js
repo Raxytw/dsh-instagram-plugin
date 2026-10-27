@@ -13,7 +13,7 @@
  */
 
 window.__ModuleLoader__.load({
-  id: 'dsh-instagram-plugin',
+  id: '@luoyi-dsh/instagram-plugin',
   factory: (require) => {
     const React = require('react')
     const h = React.createElement
@@ -1178,13 +1178,8 @@ window.__ModuleLoader__.load({
     const normalizeConfig = (raw) => {
       const c = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {}
       return {
-        username: cleanStr(c.username, ''),
-        password: cleanStr(c.password, ''),
-        twoFactorCode: cleanStr(c.twoFactorCode, ''),
-        sessionPath: cleanStr(c.sessionPath, 'data/ig_session.json') || 'data/ig_session.json',
         botUsername: cleanStr(c.botUsername, ''),
         targetMentionUser: cleanStr(c.targetMentionUser, ''),
-        proxyUrl: cleanStr(c.proxyUrl, ''),
 
         patrolEnabled: cleanBool(c.patrolEnabled, true),
         patrolIntervalMinutes: cleanNum(c.patrolIntervalMinutes, 15),
@@ -1362,20 +1357,15 @@ window.__ModuleLoader__.load({
         setTestingLogin(true)
         setMsg(null)
         try {
-          const res = await jpost('/login', {
-            username: cleanStr(cfg.username),
-            password: cleanStr(cfg.password),
-            twoFactorCode: cleanStr(cfg.twoFactorCode),
-            proxyUrl: cleanStr(cfg.proxyUrl),
-          })
+          const res = await jpost('/login', {})
           if (res?.ok) {
-            setMsg({ text: res.loginStatus?.message || 'Instagram 驗證成功，連線就緒。', type: 'good' })
+            setMsg({ text: res.loginStatus?.message || 'Instagram MCP 會話驗證成功，連線就緒。', type: 'good' })
           } else {
-            setMsg({ text: `登入未就緒: ${res?.loginStatus?.message || '請確認帳號密碼或 2FA 代碼'}`, type: 'warn' })
+            setMsg({ text: `MCP 會話尚未就緒: ${res?.loginStatus?.message || '請先前往 Instagram FastMCP 設定面板完成登入'}`, type: 'warn' })
           }
           await refreshData()
         } catch (e) {
-          setMsg({ text: `連線操作異常: ${e.message}`, type: 'warn' })
+          setMsg({ text: `會話檢查異常: ${e.message}`, type: 'warn' })
         } finally {
           setTestingLogin(false)
         }
@@ -1442,7 +1432,7 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'ig-tabs-rail' },
           [
-            ['auth', Icon.Shield, '帳號與認證'],
+            ['auth', Icon.Shield, '身分與 MCP 會話'],
             ['browse', Icon.Compass, '瀏覽與探索'],
             ['patrol', Icon.Tag, '標籤巡查推坑'],
             ['mention', Icon.MessageSquare, '提及應答'],
@@ -1473,7 +1463,7 @@ window.__ModuleLoader__.load({
           : null,
 
         // ====================================================================
-        // TAB 1: 帳號與認證 (Auth & Session)
+        // TAB 1: 身分與 MCP 會話 (Identity & MCP Session)
         // ====================================================================
         tab === 'auth'
           ? h(
@@ -1482,72 +1472,81 @@ window.__ModuleLoader__.load({
               h(
                 'div',
                 { className: 'ig-section-head' },
-                h('div', { className: 'ig-section-title' }, 'Instagram 憑證與認證設定'),
-                h('div', { className: 'ig-section-desc' }, '配置登入憑證與 Session 儲存，系統將自動管理 Cookie 會話並防止頻繁重登。')
-              ),
-
-              h(
-                'div',
-                { className: 'ig-grid-2' },
+                h('div', { className: 'ig-section-title' }, 'Instagram MCP 會話與身分配置'),
                 h(
                   'div',
-                  { className: 'ig-field' },
-                  h('label', { className: 'ig-field-label' }, 'Instagram 帳號 (Username)'),
-                  h('input', {
-                    className: 'ig-input-text',
-                    value: cleanStr(cfg.username),
-                    placeholder: 'your_bot_account',
-                    onChange: (e) => updateField('username', e.target.value),
-                  }),
-                  h('div', { className: 'ig-field-hint' }, '登入使用的 IG 帳號名稱')
-                ),
-                h(
-                  'div',
-                  { className: 'ig-field' },
-                  h('label', { className: 'ig-field-label' }, 'Instagram 密碼 (Password)'),
-                  h('input', {
-                    type: 'password',
-                    className: 'ig-input-text',
-                    value: cleanStr(cfg.password),
-                    placeholder: '已存 Session 時可留空',
-                    onChange: (e) => updateField('password', e.target.value),
-                  }),
-                  h('div', { className: 'ig-field-hint' }, '密碼儲存於本機 Profile，已有 Session 時不強制填寫')
+                  { className: 'ig-section-desc' },
+                  '本插件不用輸入帳號密碼，直接沿用依賴的 @luoyi-dsh/instagram-mcp 核心服務獲取之 Session。'
                 )
               ),
 
+              // MCP 會話繼承狀態卡片
               h(
                 'div',
-                { className: 'ig-grid-2' },
+                {
+                  style: {
+                    background: isLoggedIn ? 'rgba(16, 185, 129, 0.08)' : 'rgba(245, 158, 11, 0.08)',
+                    border: `1px solid ${isLoggedIn ? 'rgba(16, 185, 129, 0.25)' : 'rgba(245, 158, 11, 0.25)'}`,
+                    borderRadius: '8px',
+                    padding: '14px 16px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '8px',
+                  },
+                },
                 h(
                   'div',
-                  { className: 'ig-field' },
-                  h('label', { className: 'ig-field-label' }, '2FA 雙重驗證代碼 (可選)'),
-                  h('input', {
-                    className: 'ig-input-text ig-input-number',
-                    value: cleanStr(cfg.twoFactorCode),
-                    placeholder: '例如 123456',
-                    onChange: (e) => updateField('twoFactorCode', e.target.value),
-                  }),
-                  h('div', { className: 'ig-field-hint' }, '登入遇到二步驟驗證挑戰時輸入')
+                  { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+                  h(
+                    'div',
+                    { style: { display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 600, fontSize: '13px', color: isLoggedIn ? '#34d399' : '#fbbf24' } },
+                    h(Icon.Shield, { size: 16 }),
+                    isLoggedIn ? '已繼承 Instagram FastMCP 核心會話' : '尚未偵測到有效的 Instagram MCP 會話'
+                  ),
+                  h(
+                    'span',
+                    {
+                      className: `ig-status-badge ${isLoggedIn ? 'connected' : 'disconnected'}`,
+                      style: { fontSize: '11px', padding: '2px 8px' },
+                    },
+                    h('span', { className: 'ig-status-dot' }),
+                    isLoggedIn ? 'Session 就緒' : '等待登入'
+                  )
                 ),
                 h(
                   'div',
-                  { className: 'ig-field' },
-                  h('label', { className: 'ig-field-label' }, '網路代理 Proxy (可選)'),
-                  h('input', {
-                    className: 'ig-input-text',
-                    value: cleanStr(cfg.proxyUrl),
-                    placeholder: 'http://127.0.0.1:7890',
-                    onChange: (e) => updateField('proxyUrl', e.target.value),
-                  }),
-                  h('div', { className: 'ig-field-hint' }, '支援 HTTP/SOCKS 代理，防止 IP 風控')
+                  { style: { fontSize: '12px', color: '#cbd5e1', lineHeight: 1.5 } },
+                  status?.loginStatus?.message || (isLoggedIn ? '已取得有效的 Instagram 會話' : '請前往「Instagram FastMCP」設定面板輸入帳號密碼完成登入。')
+                ),
+                h(
+                  'div',
+                  { style: { fontSize: '11px', color: '#94a3b8' } },
+                  '※ 帳號、密碼、2FA 驗證與 Session 持久化由 @luoyi-dsh/instagram-mcp 集中管控，各外掛直接共享底層 Client。'
                 )
               ),
 
+              // 業務身分設定
               h(
                 'div',
-                { className: 'ig-grid-2' },
+                { className: 'ig-grid-2', style: { marginTop: '8px' } },
+                h(
+                  'div',
+                  { className: 'ig-field' },
+                  h('label', { className: 'ig-field-label' }, '機器人自身帳號名 (Bot Username)'),
+                  h('input', {
+                    className: 'ig-input-text',
+                    value: cleanStr(cfg.botUsername),
+                    placeholder: status?.loginStatus?.username ? `@${status.loginStatus.username} (自動繼承)` : 'bot_account_name',
+                    onChange: (e) => updateField('botUsername', e.target.value),
+                  }),
+                  h(
+                    'div',
+                    { className: 'ig-field-hint' },
+                    status?.loginStatus?.username
+                      ? `留空時自動沿用 MCP 登入帳號 (@${status.loginStatus.username})`
+                      : '用於辨識貼文留言區中標註 @機器人 的提問；留空時自動沿用 MCP 帳號'
+                  )
+                ),
                 h(
                   'div',
                   { className: 'ig-field' },
@@ -1558,25 +1557,13 @@ window.__ModuleLoader__.load({
                     placeholder: '@your_main_account',
                     onChange: (e) => updateField('targetMentionUser', e.target.value),
                   }),
-                  h('div', { className: 'ig-field-hint' }, '巡查發現精選好文時，會在留言區 @ 推薦給此用戶')
-                ),
-                h(
-                  'div',
-                  { className: 'ig-field' },
-                  h('label', { className: 'ig-field-label' }, '機器人自身帳號名 (Bot Username)'),
-                  h('input', {
-                    className: 'ig-input-text',
-                    value: cleanStr(cfg.botUsername),
-                    placeholder: 'bot_account_name',
-                    onChange: (e) => updateField('botUsername', e.target.value),
-                  }),
-                  h('div', { className: 'ig-field-hint' }, '用於辨識貼文留言區中標註 @機器人 的提問')
+                  h('div', { className: 'ig-field-hint' }, '巡查發現精選好文時，會在留言區 @ 推薦給此目標帳號')
                 )
               ),
 
               h(
                 'div',
-                { className: 'ig-btn-group', style: { marginTop: '8px' } },
+                { className: 'ig-btn-group', style: { marginTop: '12px' } },
                 h(
                   'button',
                   {
@@ -1584,8 +1571,8 @@ window.__ModuleLoader__.load({
                     disabled: testingLogin,
                     onClick: testLoginAction,
                   },
-                  h(Icon.Shield, { size: 14 }),
-                  testingLogin ? '正在連線登入...' : '驗證 Session / 立即登入'
+                  h(Icon.Refresh, { size: 13 }),
+                  testingLogin ? '正在同步會話...' : '檢查 / 重新同步 MCP 會話'
                 ),
                 h(
                   'button',
@@ -2558,49 +2545,70 @@ window.__ModuleLoader__.load({
         if (!slots) return
 
         // 1. 左側一級專屬導航槽位 (settings.section)
-        try {
-          slots.inject('settings.section', () =>
+        const registerSection = () => {
+          try {
             slots.register(
               {
                 name: 'settings.section',
                 id: 'instagram-plugin',
-                order: 32,
-                label: 'Instagram',
+                order: 35,
+                label: 'Instagram 助理',
               },
               () => h(Panel)
             )
-          )
-        } catch (e) {}
+          } catch (e) {
+            console.error('[@luoyi-dsh/instagram-plugin] 註冊 settings.section 異常:', e)
+          }
+        }
+        if (typeof slots.inject === 'function') {
+          slots.inject('settings.section', registerSection)
+        } else if (typeof slots.register === 'function') {
+          registerSection()
+        }
 
         // 2. 外掛程式頁面頂部頁籤 (settings.plugins.tab)
-        try {
-          slots.inject('settings.plugins.tab', () =>
+        const registerTab = () => {
+          try {
             slots.register(
               {
                 name: 'settings.plugins.tab',
                 id: 'instagram-plugin',
-                order: 32,
+                order: 35,
                 label: 'Instagram',
               },
               () => h(Panel)
             )
-          )
-        } catch (e) {}
+          } catch (e) {
+            console.error('[@luoyi-dsh/instagram-plugin] 註冊 settings.plugins.tab 異常:', e)
+          }
+        }
+        if (typeof slots.inject === 'function') {
+          slots.inject('settings.plugins.tab', registerTab)
+        } else if (typeof slots.register === 'function') {
+          registerTab()
+        }
 
         // 3. 外掛程式卡片列表槽位 (plugins.item)
-        try {
-          slots.inject('plugins.item', () =>
+        const registerItem = () => {
+          try {
             slots.register(
               {
                 name: 'plugins.item',
                 id: 'instagram-plugin',
-                order: 32,
+                order: 35,
                 label: 'Instagram 社群助理',
               },
               () => h(Panel)
             )
-          )
-        } catch (e) {}
+          } catch (e) {
+            console.error('[@luoyi-dsh/instagram-plugin] 註冊 plugins.item 異常:', e)
+          }
+        }
+        if (typeof slots.inject === 'function') {
+          slots.inject('plugins.item', registerItem)
+        } else if (typeof slots.register === 'function') {
+          registerItem()
+        }
       },
     }
   },

@@ -86,19 +86,6 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
     } catch {}
   }
 
-  // 確保 sessionPath 所在資料夾與 session 初始檔案動態建立
-  const sessionAbsPath = join(pluginRoot, activeConfig.sessionPath || 'data/ig_session.json')
-  const sessionDir = dirname(sessionAbsPath)
-  if (!existsSync(sessionDir)) {
-    try {
-      mkdirSync(sessionDir, { recursive: true })
-    } catch {}
-  }
-  if (!existsSync(sessionAbsPath)) {
-    try {
-      writeFileSync(sessionAbsPath, '{}', 'utf-8')
-    } catch {}
-  }
 
   const saveConfig = (patch: Partial<InstagramPluginConfig>) => {
     const cleanPatch = sanitizeConfig(patch)
@@ -133,7 +120,14 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
 
   const getLoginStatus = () => {
     const svc = getSharedMcpService()
-    return svc?.loginStatus || { ok: false, message: '等待 FastMCP 核心服務就緒...' }
+    if (svc?.loginStatus) {
+      return svc.loginStatus
+    }
+    const client = getMcpClient()
+    if (!client || !client.ready) {
+      return { ok: false, message: '等待 @luoyi-dsh/instagram-mcp 核心服務就緒...' }
+    }
+    return { ok: false, message: 'Instagram MCP 未登入，請至 MCP 面板輸入帳密登入' }
   }
 
   // 立即註冊自動化專屬 Tools 給主模型
@@ -237,18 +231,21 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
       if (req.method === 'GET' && pathname === '/api/instagram/status') {
         const client = getMcpClient()
         const status = getLoginStatus()
+        const svc = getSharedMcpService()
+        const activeBotUser = activeConfig.botUsername || status?.username || svc?.loginStatus?.username || ''
         return sendJson(res, 200, {
           ok: true,
           mcpRunning: Boolean(client?.isRunning),
           mcpReady: Boolean(client?.ready),
           loginStatus: status,
+          inheritedSession: true,
+          botUsername: activeBotUser,
           dailyStats: ledger.getDailyStats(),
         })
       }
 
-      // 觸發帳號登入 / Session 驗證
+      // 檢查並同步繼承的 MCP Session 狀態 (不自管帳密，完全沿用 MCP 獲取之會話)
       if (req.method === 'POST' && pathname === '/api/instagram/login') {
-        const body = await readBody(req)
         const client = getMcpClient()
         if (!client || !client.ready) {
           return sendJson(res, 503, {
@@ -257,56 +254,26 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
           })
         }
 
-        const cleanStr = (v: any, fallback = ''): string => {
-          if (typeof v === 'string') return v
-          if (v && typeof v === 'object' && typeof v.get === 'function') {
-            const u = v.get()
-            return typeof u === 'string' ? u : fallback
+        const svc = getSharedMcpService()
+        let currentLoginStatus = svc?.loginStatus || { ok: false, message: '等待 MCP 登入' }
+        if (!currentLoginStatus.ok && client && client.ready) {
+          const res: any = await client.igLogin({}).catch((e: any) => ({ ok: false, message: e.message }))
+          if (res?.ok) {
+            currentLoginStatus = {
+              ok: true,
+              method: res.method,
+              username: res.username || '',
+              user_id: res.user_id,
+              message: `已登入 (${res.method === 'session' ? 'Session 快取' : '帳號連線'}) - @${res.username || ''}`,
+            }
+            if (svc) svc.setLoginStatus(currentLoginStatus)
           }
-          return fallback
         }
-
-        const targetUser = cleanStr(body.username, activeConfig.username)
-        const targetPass = cleanStr(body.password, activeConfig.password)
-
-        // 優先對準 dsh-instagram-mcp 的有效 session 憑證，避免空 session 檔混淆
-        const mcpSessionPath = join(dirname(pluginRoot), 'dsh-instagram-mcp', 'vendor', 'instagram-mcp', 'data', 'ig_session.json')
-        const targetSession = existsSync(mcpSessionPath) 
-          ? mcpSessionPath 
-          : (cleanStr(activeConfig.sessionPath, 'data/ig_session.json') || 'data/ig_session.json')
-
-        const target2fa = cleanStr(body.twoFactorCode, activeConfig.twoFactorCode)
-        const targetProxy = cleanStr(body.proxyUrl, activeConfig.proxyUrl)
-
-        const loginRes = await client.igLogin({
-          username: targetUser,
-          password: targetPass,
-          session_path: targetSession,
-          two_factor_code: target2fa,
-          proxy_url: targetProxy,
+        return sendJson(res, 200, {
+          ok: Boolean(currentLoginStatus?.ok),
+          inheritedSession: true,
+          loginStatus: currentLoginStatus,
         })
-
-        if (loginRes?.ok) {
-          const displayUser = loginRes.username || activeConfig.botUsername || targetUser
-          const status = {
-            ok: true,
-            method: loginRes.method,
-            username: displayUser,
-            user_id: loginRes.user_id,
-            message: `已登入 (${loginRes.method === 'session' ? 'Session 快取' : '帳號密碼'}) - @${displayUser}`,
-          }
-          const svc = getSharedMcpService()
-          if (svc) svc.setLoginStatus(status)
-          return sendJson(res, 200, { ok: true, loginStatus: status })
-        } else {
-          const errorMsg = typeof loginRes === 'string' 
-            ? loginRes 
-            : (loginRes?.error || loginRes?.message || '登入失敗，請確認帳號密碼或 2FA 代碼')
-          return sendJson(res, 200, { 
-            ok: false, 
-            loginStatus: { ok: false, message: errorMsg } 
-          })
-        }
       }
 
       // ======================================================================

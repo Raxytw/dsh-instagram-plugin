@@ -10,6 +10,6 @@
 
 - insert:
     - id: instagram-plugin
-      name: dsh-instagram-plugin
+      name: '@luoyi-dsh/instagram-plugin'
       config:
         enabled: true

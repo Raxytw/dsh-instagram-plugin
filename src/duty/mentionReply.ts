@@ -106,9 +106,11 @@ export async function executeMentionReplyDuty(
     return { ok: true, scannedComments: 0, repliedCount: 0, notes }
   }
 
-  const botName = (config.botUsername || '').replace(/^@/, '').trim().toLowerCase()
+  const svc = (globalThis as any).__DSH_INSTAGRAM_MCP__
+  const fallbackUser = svc?.loginStatus?.username || ''
+  const botName = (config.botUsername || fallbackUser || '').replace(/^@/, '').trim().toLowerCase()
   if (!botName) {
-    notes.push('未設定機器人帳號名稱 (botUsername 為空)，無法比對被 @ 留言')
+    notes.push('未設定機器人帳號名稱且 MCP 尚未登入 (botUsername 為空)，無法比對被 @ 留言')
     return { ok: true, scannedComments: 0, repliedCount: 0, notes }
   }
 

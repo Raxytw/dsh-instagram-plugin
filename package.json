@@ -1,6 +1,6 @@
 {
   "name": "@luoyi-dsh/instagram-plugin",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "DeepSeek Harness (DSH) Instagram 插件：背景標籤巡查推薦、被@提問上下文推理應答與私訊雙向互動",
   "keywords": [
     "dsh",
@@ -19,6 +19,7 @@
     },
     "client": {
       "platform": "web",
+      "immediately": true,
       "inject": [
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-ui-settings-plugins"

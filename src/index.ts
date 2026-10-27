@@ -405,7 +405,9 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
 
   const webServer = (typeof ctx.get === 'function' ? ctx.get('webServer') : undefined) || ctx.webServer
 
-  if (webServer) {
+  if ((globalThis as any).__DSH_IG_ROUTES_REGISTERED__) {
+    // 已經註冊過，防止重複載入導致 duplicate prefix route
+  } else if (webServer) {
     try {
       if (typeof webServer.register === 'function') {
         webServer.register({
@@ -413,9 +415,11 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
           path: '/api/instagram',
           handler: handleRequest,
         })
+        ;(globalThis as any).__DSH_IG_ROUTES_REGISTERED__ = true
         log('✅ 已註冊 DSH 官方路由: /api/instagram')
       } else if (webServer.router) {
         webServer.router.all('/api/instagram/*', handleRequest)
+        ;(globalThis as any).__DSH_IG_ROUTES_REGISTERED__ = true
       }
     } catch (e: any) {
       log(`註冊 Web 路由異常: ${e.message}`)

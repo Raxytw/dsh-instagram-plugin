@@ -1,10 +1,16 @@
-# DSH Instagram 業務插件 (`dsh-instagram-plugin`)
+# DSH Instagram 業務插件 (`@luoyi-dsh/instagram-plugin`)
 
-依賴 `dsh-instagram-mcp` 的 FastMCP 連線與登入憑證。這個插件負責兩大核心能力：
+依賴 `dsh-instagram-mcp` 的 FastMCP 連線與登入憑證。這個插件負責兩大核心能力與現代化架構設計：
 1. **安全唯讀瀏覽與探索 (Read-Only Browsing)**：刷指定創作者貼文、刷 Reels 短片、探索首頁動態、搜尋用戶與標籤（不按讚、不發文、不留痕跡）。
 2. **自動化社群互動助理 (Automation Duties)**：標籤巡查推坑、貼文 @提及應答、代回未讀私訊。
+3. **無污染發布與動態建檔 (Dynamic Data Architecture)**：
+   - **零敏感資訊洩漏**：NPM 發布規範嚴格排除 `/data`（`!**/data/**`），任何帳密、Token、Session 或本地帳本絕不隨套件打包。
+   - **執行期動態自動創建**：外掛於 Cordis 載入時全自動按需建立 `/data` 目錄、`config.json`、`ledger.json` 與 `ig_session.json`，開箱即用。
+   - **Cordis 路由防重複保護**：透過全域旗標鎖，防止插件熱重載時因重複註冊 `/api/instagram` 導致 duplicate prefix route 衝突。
 
 Web 設定與瀏覽介面位於 DSH 的 `client.js`。2026-10-27 在本機 `http://127.0.0.1:3080` 完整調試與驗證。
+
+---
 
 ## 唯讀瀏覽與探索 API (純讀不發文)
 
@@ -149,3 +155,27 @@ curl -X POST http://127.0.0.1:3080/api/instagram/run \
 
 ### Q3：為什麼標籤搜尋 `#technology` 一直抓不到貼文？
 - **解答**：Instagram 近期大幅收緊公開 Hashtag 的 API 存取權限。非商業驗證節點直接查詢標籤端點多半會被 Instagram 限制並回傳空資料。建議改用「創作者主頁 (User Posts)」直接訂閱知名媒體或帳號，或是透過「連續短片 (Reels)」獲取最新熱門短片。
+
+---
+
+## 資料目錄與動態持久化架構
+
+本外掛採用完全解耦的執行期動態初始化架構，不依賴任何隨套件分發的靜態資料檔：
+
+```
+dsh-instagram-plugin/
+├── client.js              # 前端 Web UI 控制面板
+├── cordis.patch.yml       # DSH Cordis 插件聲明
+├── dist/                  # 編譯後之 JavaScript 產物
+├── src/                   # TypeScript 源代碼
+└── data/                  # 【執行期動態建立，不進 Git / NPM】
+    ├── config.json        # 外掛持久化配置（自動根據默認值產生）
+    ├── ledger.json        # 狀態去重與每日配額帳本（自動初始化）
+    └── ig_session.json    # Instagram Session 憑證
+```
+
+- **安裝方式**：
+  ```bash
+  npm install @luoyi-dsh/instagram-plugin
+  ```
+- **初始化**：初次由 DSH 載入時，將自動建立 `data/` 與預設設定，即可在 DSH 介面或前端設定面板立即進行配置。

@@ -1,0 +1,15 @@
+# ============================================================================
+# dsh-instagram-plugin —— DSH bundle patch（插件掛載宣告）
+# ============================================================================
+# 標準 DSH 插件掛載宣告：
+# 安裝後在 profile 的 `dsh.profile.bundles` 中列出此包名即可生效：
+#   dsh plugin --profile web add dsh-instagram-plugin
+# 本地開發測試：
+#   dsh plugin --profile web add link:<本專案目錄>
+# ============================================================================
+
+- insert:
+    - id: instagram-plugin
+      name: dsh-instagram-plugin
+      config:
+        enabled: true

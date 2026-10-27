@@ -6,34 +6,6 @@
 
 Web 設定與瀏覽介面位於 DSH 的 `client.js`。2026-10-27 在本機 `http://127.0.0.1:3080` 完整調試與驗證。
 
----
-
-## 核心問題與重大修復 (2026-10-27 更新)
-
-針對先前使用者瀏覽時遇到的痛點，本版已進行徹底修復與升級：
-
-### 1. 解決「工具叫不到」：雙軌呼叫機制
-- **DSH 工具註冊**：新增註冊 5 個專屬唯讀工具（`ig_browse_user_posts`、`ig_browse_reels`、`ig_browse_timeline`、`ig_search_users`、`ig_search_tags`）。
-- **獨立 REST HTTP 瀏覽端點**：即便在某些對話環境中模型未載入插件工具，任何腳本、curl 或前端介面皆可透過 `http://127.0.0.1:3080/api/instagram/browse/*` 直連調用，絕不受阻。
-
-### 2. 解決「沒有只瀏覽入口」：全新只讀瀏覽線路
-- 舊版只有 `/api/instagram/run`，會執行巡查並可能直接發留言 @人。
-- 新增專屬 `/api/instagram/browse/user`、`/api/instagram/browse/reels` 等端點，純讀取創作者貼文或短片，絕不觸發任何留言、點讚或追蹤，安全無風控疑慮。
-
-### 3. 解決「標籤搜尋假成功（回傳 0 則卻顯示 ok）」
-- **真實現象**：Instagram 官方行動端 API 近期對公開 Hashtag 的 `recent` 與 `top` 端點實施嚴格風控限制，多數標籤請求會被 Instagram 官方阻斷並回傳空列表。
-- **修復**：後端不再吞掉例外假裝成功，而是診斷並回傳 `status: "restricted_or_empty"`，並在 Web 介面與回應中明確提醒：「Instagram 官方已限制公開 Hashtag 端點，建議改用『指定創作者貼文』或『探索 Reels』獲取可靠內容」。
-
-### 4. 解決「改抓帳號貼文不穩與聯名發文混淆」
-- **空帳號排查**：部分帳號如 `theverge`、`hypertech` 貼文為 0，是因為這些是佔名號或無貼文帳號（例如科技媒體 The Verge 的真實官方帳號為 `verge`，有 6,400+ 篇貼文）。新版回傳包含 `user_meta`（粉絲數、貼文總數 `media_count`），若 `media_count: 0` 會明確標註警告，防止誤判。
-- **聯名貼文 (Collaborative Posts) 正確標籤**：例如 TechCrunch 與作者的聯名貼文，Instagram 官方結構會將作者放在 `m.user`（例如 `@dominicmadori`），而將 TechCrunch 放在 `m.coauthor_producers`。新版核心解析器已補全 `is_collaborative: true` 與 `coauthors`，並在前端以 `[聯名發布] @dominicmadori × @techcrunch` 清晰標示，不再誤認抓錯來源。
-
-### 5. 解決「登入狀態看錯與 Session 混淆」
-- 狀態不再顯示登入時填寫的 Email（例如 `raxytw.ai@gmail.com`），而是透過 Instagram 用戶 ID 逆向解析出真實的用戶名稱（例如 `@raxytw.ai`）。
-- **Session 自動回退偵測**：若插件自身目錄下的 `data/ig_session.json` 為空檔（2 bytes `{}`），後端會自動回退探測並載入 `dsh-instagram-mcp/vendor/instagram-mcp/data/ig_session.json` 中的有效憑證，兩份路徑無縫相容。
-
----
-
 ## 唯讀瀏覽與探索 API (純讀不發文)
 
 ### 1. 讀取指定創作者貼文 (User Posts)
@@ -177,13 +149,3 @@ curl -X POST http://127.0.0.1:3080/api/instagram/run \
 
 ### Q3：為什麼標籤搜尋 `#technology` 一直抓不到貼文？
 - **解答**：Instagram 近期大幅收緊公開 Hashtag 的 API 存取權限。非商業驗證節點直接查詢標籤端點多半會被 Instagram 限制並回傳空資料。建議改用「創作者主頁 (User Posts)」直接訂閱知名媒體或帳號，或是透過「連續短片 (Reels)」獲取最新熱門短片。
-
----
-
-## 更新與安裝
-
-在專案根目錄執行專屬更新腳本：
-```powershell
-powershell -ExecutionPolicy Bypass -File .\Updata_Plugin_Instagram.ps1
-```
-腳本將自動完成 `dsh-instagram-mcp` 與 `dsh-instagram-plugin` 的 TypeScript 編譯，並自動建立符號連結至 DSH 執行環境中。

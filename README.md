@@ -1,6 +1,8 @@
 # DSH Instagram 業務插件 (`@luoyi-dsh/instagram-plugin`)
 
-依賴 `dsh-instagram-mcp` 的 FastMCP 連線與登入憑證。這個插件負責兩大核心能力：
+![DSH Instagram Plugin Banner](assets/banner.png)
+
+依賴 `@luoyi-dsh/instagram-mcp` 的 FastMCP 連線與登入憑證。這個插件負責兩大核心能力：
 1. **安全唯讀瀏覽與探索 (Read-Only Browsing)**：刷指定創作者貼文、刷 Reels 短片、探索首頁動態、搜尋用戶與標籤（不按讚、不發文、不留痕跡）。
 2. **自動化社群互動助理 (Automation Duties)**：標籤巡查推坑、貼文 @提及應答、代回未讀私訊。
 

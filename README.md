@@ -1,14 +1,10 @@
 # DSH Instagram 業務插件 (`@luoyi-dsh/instagram-plugin`)
 
-依賴 `dsh-instagram-mcp` 的 FastMCP 連線與登入憑證。這個插件負責兩大核心能力與現代化架構設計：
+依賴 `dsh-instagram-mcp` 的 FastMCP 連線與登入憑證。這個插件負責兩大核心能力：
 1. **安全唯讀瀏覽與探索 (Read-Only Browsing)**：刷指定創作者貼文、刷 Reels 短片、探索首頁動態、搜尋用戶與標籤（不按讚、不發文、不留痕跡）。
 2. **自動化社群互動助理 (Automation Duties)**：標籤巡查推坑、貼文 @提及應答、代回未讀私訊。
-3. **無污染發布與動態建檔 (Dynamic Data Architecture)**：
-   - **零敏感資訊洩漏**：NPM 發布規範嚴格排除 `/data`（`!**/data/**`），任何帳密、Token、Session 或本地帳本絕不隨套件打包。
-   - **執行期動態自動創建**：外掛於 Cordis 載入時全自動按需建立 `/data` 目錄、`config.json`、`ledger.json` 與 `ig_session.json`，開箱即用。
-   - **Cordis 路由防重複保護**：透過全域旗標鎖，防止插件熱重載時因重複註冊 `/api/instagram` 導致 duplicate prefix route 衝突。
 
-Web 設定與瀏覽介面位於 DSH 的 `client.js`。2026-10-27 在本機 `http://127.0.0.1:3080` 完整調試與驗證。
+Web 設定與瀏覽介面位於 DSH 的 `client.js`。
 
 ---
 
@@ -88,7 +84,7 @@ curl http://127.0.0.1:3080/api/instagram/status
 ```
 重點欄位：
 - `loginStatus.ok`: 是否已登入
-- `loginStatus.username`: 當前登入的真實 Instagram Handle（如 `raxytw.ai`）
+- `loginStatus.username`: 當前登入的真實 Instagram Handle（如 `your_account`）
 - `loginStatus.message`: 登入狀態說明與憑證來源
 - `sessionPath`: 當前生效的 Session 檔案實體路徑
 
@@ -133,7 +129,7 @@ curl -X POST http://127.0.0.1:3080/api/instagram/run \
 
 前端面板遵循 `.agents/skills/design-taste-frontend` 規範，提供六大專屬分頁：
 1. **帳號與認證**：顯示真實已登入的 `@handle` 與 Session 狀態，管理登入參數。
-2. **瀏覽與探索 (全新推出)**：
+2. **瀏覽與探索**：
    - **連續短片 (Reels)**：刷短片封面、播放連結與發布資訊。
    - **創作者主頁貼文**：輸入帳號（如 `wired`, `verge`），完整呈現個人 Bio、粉絲數、公開貼文卡片與聯名合作標記。
    - **首頁動態探索**：一鍵瀏覽探索動態。
@@ -148,10 +144,10 @@ curl -X POST http://127.0.0.1:3080/api/instagram/run \
 ## 常見排查與問答
 
 ### Q1：為什麼查詢 `theverge` 貼文數是 0，而 `wired` 正常？
-- **解答**：`theverge` 在 Instagram 上是一個沒有任何貼文的空帳號（佔位號），其 `media_count` 為 0。知名科技媒體 The Verge 的真實官方 Instagram 帳號名是 **`verge`**（擁有 6,400+ 篇貼文）。在新版外掛程式中，查詢時頂部名片會即時顯示該帳號的真實貼文總數，並提出診斷提醒。
+- **解答**：`theverge` 在 Instagram 上是一個沒有任何貼文的空帳號（佔位號），其 `media_count` 為 0。知名科技媒體 The Verge 的真實官方 Instagram 帳號名是 **`verge`**（擁有 6,400+ 篇貼文）。查詢時頂部名片會即時顯示該帳號的真實貼文總數，並提出診斷提醒。
 
 ### Q2：為什麼在 `techcrunch` 的結果中，作者卻顯示為 `@dominicmadori`？
-- **解答**：這是 Instagram 官方的「聯名發布 (Collaborative Posts)」機制。此貼文由 TechCrunch 與作者 Dominic Madori 共同發布，Instagram 官方 API 會將主要作者設為 `dominicmadori`，並在 `coauthor_producers` 中列出 `techcrunch`。新版程式已解析此欄位，卡片上會明確以 `[聯名發布] @dominicmadori × @techcrunch` 呈現，不會再造成混淆。
+- **解答**：這是 Instagram 官方的「聯名發布 (Collaborative Posts)」機制。此貼文由 TechCrunch 與作者 Dominic Madori 共同發布，Instagram 官方 API 會將主要作者設為 `dominicmadori`，並在 `coauthor_producers` 中列出 `techcrunch`。卡片上會明確以 `[聯名發布] @dominicmadori × @techcrunch` 呈現，不會再造成混淆。
 
 ### Q3：為什麼標籤搜尋 `#technology` 一直抓不到貼文？
 - **解答**：Instagram 近期大幅收緊公開 Hashtag 的 API 存取權限。非商業驗證節點直接查詢標籤端點多半會被 Instagram 限制並回傳空資料。建議改用「創作者主頁 (User Posts)」直接訂閱知名媒體或帳號，或是透過「連續短片 (Reels)」獲取最新熱門短片。

@@ -225,6 +225,10 @@ export function registerIgTools(
         if (!mcp || !mcp.isRunning) {
           return { ok: false, error: 'Instagram MCP 服務尚未就緒，請稍候' }
         }
+        if (!args.reply_to_comment_pk && ledger.hasEverSentPost(args.media_pk)) {
+          log(`[Tools] ⏭️ 攔截重複留言：貼文/Reel ${args.media_pk} 已經發送過留言，禁止重複發送`)
+          return { ok: false, duplicate: true, error: `貼文或 Reel (${args.media_pk}) 已經發送過留言，不可重複發送` }
+        }
         log(`[Tools] 主模型手動在貼文 ${args.media_pk} 發布留言`)
         const res = await mcp.igPostComment({
           media_pk: args.media_pk,
@@ -233,7 +237,7 @@ export function registerIgTools(
           jitter_min: 1.0,
           jitter_max: 2.0,
         })
-        if (res?.ok) {
+        if (!args.reply_to_comment_pk) {
           ledger.markSeenPost(args.media_pk, { recommended: true })
         }
         return res

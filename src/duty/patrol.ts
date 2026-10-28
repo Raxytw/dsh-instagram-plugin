@@ -157,13 +157,16 @@ export async function executePatrolDuty(
           break
         }
 
-        const pk = String(post.pk || '')
+        const pk = String(post.pk || post.id || '').split('_')[0].trim()
         if (!pk) continue
 
-        // 1. 檢查去重帳本
-        if (ledger.hasSeenPost(pk)) {
+        // 1. 跨外掛嚴格去重檢查 (比對 Canonical PK、Shortcode、URL、內容指紋，並與 dsh-instagram-scroll 共享去重庫)
+        if (ledger.hasSeenPost(post) || ledger.hasEverSentPost(post)) {
           continue
         }
+
+        // 先行標記為已讀，杜絕並發或同輪多關鍵字重複審閱同一則貼文/Reel
+        ledger.markSeenPost(post, { hashtag: tag, recommended: false })
 
         processed++
         const caption = String(post.caption || '')
@@ -175,13 +178,11 @@ export async function executePatrolDuty(
         const aigcCheck = isAiGeneratedContent(caption, authorName)
         if (aigcCheck.isAigc) {
           log(`[Patrol] 🚫 貼文 ${pk} 判定為 AI 生成影片/動畫/文章 (命中 "${aigcCheck.matchedTerm}")，直接過濾跳過`)
-          ledger.markSeenPost(pk, { hashtag: tag, recommended: false })
           continue
         }
 
         // 3. 點讚與留言門檻過濾
         if (likes < config.minLikes || comments < config.minComments) {
-          ledger.markSeenPost(pk, { hashtag: tag, recommended: false })
           continue
         }
 
@@ -192,7 +193,6 @@ export async function executePatrolDuty(
           config.excludeKeywords.some((kw) => kw && captionLower.includes(kw.toLowerCase()))
         ) {
           log(`[Patrol] 貼文 ${pk} 命中排除關鍵字，跳過`)
-          ledger.markSeenPost(pk, { hashtag: tag, recommended: false })
           continue
         }
 
@@ -200,7 +200,6 @@ export async function executePatrolDuty(
         if (config.requireKeywords && config.requireKeywords.length > 0) {
           const matched = config.requireKeywords.some((kw) => kw && captionLower.includes(kw.toLowerCase()))
           if (!matched) {
-            ledger.markSeenPost(pk, { hashtag: tag, recommended: false })
             continue
           }
         }
@@ -258,8 +257,36 @@ ${wrapUntrustedContent('post_caption', caption.slice(0, 600))}
           isRecommend = llmReply.includes('"recommend": true') || llmReply.includes('recommend: true')
         }
 
-        // 7. 若符合推薦標準，留言推坑
+        // 7. 若符合推薦標準，進行發送前二次防重檢查並留言推坑
         if (isRecommend && reason) {
+          if (ledger.hasEverSentPost(post)) {
+            log(`[Patrol] ⏭️ 貼文/Reel (${pk}) 已經在其他任務發送過推坑留言，攔截重複發送！`)
+            continue
+          }
+
+          // 檢查該貼文留言區是否已經有機器人帳號發過的留言（防止帳本重設後重複留言）
+          const botUserLower = String(svc?.loginStatus?.username || svc?.config?.username || config.botUsername || '')
+            .replace(/^@/, '')
+            .trim()
+            .toLowerCase()
+          try {
+            const ctxCheck = await mcp.igGetPostContext(pk, 15)
+            const existingComments: any[] = ctxCheck?.comments || []
+            const alreadyCommented = existingComments.some((c: any) => {
+              const cu = String(c.user?.username || '').toLowerCase()
+              const ct = String(c.text || '').toLowerCase()
+              return (
+                (botUserLower && cu === botUserLower) ||
+                (targetMentionUser && ct.includes(`@${targetMentionUser.toLowerCase()}`))
+              )
+            })
+            if (alreadyCommented) {
+              log(`[Patrol] ⏭️ 偵測到貼文/Reel (${pk}) 留言區已有機器人或 @${targetMentionUser} 的推坑紀錄，永久標記並跳過重複發送！`)
+              ledger.markSeenPost(post, { hashtag: tag, recommended: true })
+              continue
+            }
+          } catch {}
+
           if (recommended > 0) {
             const waitSec = config.minCommentIntervalSeconds || 30
             log(`[Patrol] 🛡️ 防風控間隔等待 ${waitSec} 秒...`)
@@ -282,6 +309,9 @@ ${wrapUntrustedContent('post_caption', caption.slice(0, 600))}
             jitter_max: config.jitterMaxSeconds,
           })
 
+          // 無論成功或網路超時，發送後立即寫入永久已發送清單，杜絕二次重發
+          ledger.markSeenPost(post, { hashtag: tag, recommended: true })
+
           if (
             postRes?.in_cooldown ||
             (postRes?.error && /action block|feedback|checkpoint|please wait|rate limit/i.test(postRes.error))
@@ -294,14 +324,13 @@ ${wrapUntrustedContent('post_caption', caption.slice(0, 600))}
 
           if (postRes?.ok) {
             recommended++
-            ledger.markSeenPost(pk, { hashtag: tag, recommended: true })
             ledger.recordAction('patrolComments')
             log(`[Patrol] ✅ 推坑留言發布成功 (PK: ${pk})`)
           } else {
             log(`[Patrol] 留言發布失敗: ${postRes?.error || JSON.stringify(postRes)}`)
           }
         } else {
-          ledger.markSeenPost(pk, { hashtag: tag, recommended: false })
+          ledger.markSeenPost(post, { hashtag: tag, recommended: false })
         }
       }
     } catch (tagErr: any) {

@@ -15,6 +15,7 @@ import type { InstagramMcpClient } from '@luoyi-dsh/instagram-mcp'
 import { executePatrolDuty } from '../duty/patrol.js'
 import { executeMentionReplyDuty } from '../duty/mentionReply.js'
 import { executeDmReplyDuty } from '../duty/dmReply.js'
+import { executeRepostMedia, generateRepostThoughtForMedia, type RepostMode } from '../duty/repost.js'
 
 export function registerIgTools(
   ctx: any,
@@ -241,6 +242,111 @@ export function registerIgTools(
           ledger.markSeenPost(args.media_pk, { recommended: true })
         }
         return res
+      },
+    },
+
+    {
+      name: 'ig_repost_media',
+      description:
+        '轉發指定的 Instagram 貼文或 Reel，支援在轉發文案裡面 @ 用戶、手動填寫對這個 Reel 或貼文內容的感想，或留空讓 AI 自動讀取該貼文/Reel 內容（字幕、畫面、內文）動態生成感想後轉發。支援限時動態轉發 (story)、動態牆/Reels 貼文轉發 (feed)、私訊卡片轉發 (dm) 與限動轉發+原貼文留言 (story_and_comment)。',
+      parameters: {
+        type: 'object',
+        properties: {
+          media_pk_or_url: {
+            type: 'string',
+            description: '欲轉發之貼文或 Reel 的唯一識別碼 (Media PK)、Shortcode 或完整 Instagram 網址 (如 https://www.instagram.com/reel/...)',
+          },
+          thought_text: {
+            type: 'string',
+            description: '可選：對這個 Reel 或貼文內容的感想 / 轉發文案。若留空，系統會自動先讀取該貼文/Reel 的真實內容並由 AI 生成具體感想。',
+          },
+          mention_users: {
+            type: 'string',
+            description: '可選：要在轉發文案裡面 @ 的 Instagram 用戶帳號（多個帳號可用逗號或空白分隔，如 "raxytw, friend2"；留空時預設帶入設定的主人帳號）。',
+          },
+          repost_mode: {
+            type: 'string',
+            enum: ['story', 'feed', 'dm', 'story_and_comment'],
+            description: '轉發模式：story (轉發至限時動態，含可點擊原貼文卡片 + @用戶 Mention + 感想文字卡片)、feed (下載並轉發為動態貼文/Reel，附上 @用戶 與感想文案)、dm (私訊轉發卡片 + 感想)、story_and_comment (限動轉發同時在原貼文留言)',
+          },
+          include_credit: {
+            type: 'boolean',
+            description: '動態牆 (feed) 轉發時是否在文末附上原創作者標註（預設 true）',
+          },
+        },
+        required: ['media_pk_or_url'],
+        additionalProperties: false,
+      },
+      execute: async (args: {
+        media_pk_or_url: string
+        thought_text?: string
+        mention_users?: string
+        repost_mode?: RepostMode
+        include_credit?: boolean
+      }) => {
+        const mcp = getMcp()
+        if (!mcp || !mcp.isRunning) {
+          return { ok: false, error: 'Instagram MCP 服務尚未就緒，請稍候' }
+        }
+        log(`[Tools] 主模型觸發轉發貼文/Reel: ${args.media_pk_or_url} (mode=${args.repost_mode || config.repostMode || 'story'})`)
+        return await executeRepostMedia(
+          ctx,
+          config,
+          mcp,
+          ledger,
+          {
+            mediaPkOrUrl: args.media_pk_or_url,
+            thoughtText: args.thought_text,
+            mentionUsers: args.mention_users,
+            repostMode: args.repost_mode || config.repostMode || 'story',
+            autoGenerateThought: !args.thought_text || !args.thought_text.trim(),
+            includeCredit: args.include_credit !== false,
+          },
+          log
+        )
+      },
+    },
+
+    {
+      name: 'ig_generate_repost_thought',
+      description:
+        '讀取指定 Instagram 貼文或 Reel 的完整內容（內文、字幕、畫面視覺描述、多模態圖片），動態生成帶有 @用戶 與對該貼文/Reel 內容具體感想的轉發文案（僅生成預覽文案，不立即發布）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          media_pk_or_url: {
+            type: 'string',
+            description: '貼文或 Reel 的 Media PK、Shortcode 或完整 Instagram 網址',
+          },
+          mention_users: {
+            type: 'string',
+            description: '可選：要在轉發文案中 @ 的用戶帳號（多個可用逗號分隔）',
+          },
+          user_hint: {
+            type: 'string',
+            description: '可選：補充給 AI 的感想方向提示（例如「想吐槽最後那個轉場」或「關注它的光影畫法」）',
+          },
+        },
+        required: ['media_pk_or_url'],
+        additionalProperties: false,
+      },
+      execute: async (args: { media_pk_or_url: string; mention_users?: string; user_hint?: string }) => {
+        const mcp = getMcp()
+        if (!mcp || !mcp.isRunning) {
+          return { ok: false, error: 'Instagram MCP 服務尚未就緒，請稍候' }
+        }
+        log(`[Tools] 生成貼文/Reel 轉發感想預覽: ${args.media_pk_or_url}`)
+        return await generateRepostThoughtForMedia(
+          ctx,
+          config,
+          mcp,
+          {
+            mediaPkOrUrl: args.media_pk_or_url,
+            mentionUsers: args.mention_users,
+            userHint: args.user_hint,
+          },
+          log
+        )
       },
     },
 

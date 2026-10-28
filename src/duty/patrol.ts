@@ -14,6 +14,7 @@
 import { InstagramPluginConfig } from '../config.js'
 import { LedgerManager } from '../lib/ledger.js'
 import { callLlmForInstagram, isAiGeneratedContent } from '../lib/llm.js'
+import { executeRepostMedia } from './repost.js'
 import {
   ANTI_AI_FLAVOR_PRIMARY_RULE,
   CONTENT_SPECIFIC_RECOMMEND_RULE,
@@ -397,6 +398,38 @@ ${wrapUntrustedContent('post_caption', fullCaption.slice(0, 800))}
             recommended++
             ledger.recordAction('patrolComments')
             log(`[Patrol] ✅ 推坑留言發布成功 (PK: ${pk})`)
+
+            // 若開啟「巡查推薦時同步轉發貼文/Reel」(repostOnPatrol)，將該貼文/Reel 連同 @用戶 與對該內容的感想一併轉發
+            if (config.repostOnPatrol) {
+              try {
+                const repostTargets =
+                  config.repostMentionUsers && config.repostMentionUsers.length > 0
+                    ? config.repostMentionUsers
+                    : [targetMentionUser]
+                const repostRes = await executeRepostMedia(
+                  ctx,
+                  config,
+                  mcp,
+                  ledger,
+                  {
+                    mediaPkOrUrl: pk,
+                    thoughtText: cleanReason,
+                    mentionUsers: repostTargets,
+                    repostMode: (config.repostMode === 'story_and_comment' ? 'story' : config.repostMode) || 'story',
+                    repostTemplate: config.repostTemplate,
+                    allowResend: true,
+                  },
+                  log
+                )
+                if (repostRes.ok) {
+                  log(`[Patrol] 🔁 已同步轉發貼文/Reel (${pk})，轉發文案: ${repostRes.finalCaption}`)
+                } else {
+                  log(`[Patrol] ⚠️ 同步轉發貼文/Reel (${pk}) 未完成: ${repostRes.error}`)
+                }
+              } catch (repErr: any) {
+                log(`[Patrol] 同步轉發異常: ${repErr.message}`)
+              }
+            }
           } else {
             log(`[Patrol] 留言發布失敗: ${postRes?.error || JSON.stringify(postRes)}`)
           }

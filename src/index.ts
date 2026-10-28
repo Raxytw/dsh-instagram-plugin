@@ -22,6 +22,7 @@ import { registerIgTools } from './tools/igTools.js'
 import { executePatrolDuty } from './duty/patrol.js'
 import { executeMentionReplyDuty } from './duty/mentionReply.js'
 import { executeDmReplyDuty } from './duty/dmReply.js'
+import { executeRepostMedia, generateRepostThoughtForMedia } from './duty/repost.js'
 import { getAuthorizedSubscriptionProviders, testLlmConnection } from './lib/llm.js'
 import { getSocialFishMemoryStats } from './lib/companion.js'
 import {
@@ -427,6 +428,62 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
           mention: mentionRes,
           dm: dmRes,
         })
+      }
+
+      // 讀取貼文/Reel 內容並由 AI 生成轉發感想預覽
+      if (req.method === 'POST' && pathname === '/api/instagram/repost/generate-thought') {
+        const client = getMcpClient()
+        if (!client || !client.ready) {
+          return sendJson(res, 503, { ok: false, error: 'FastMCP 服務尚未就緒，請確認 dsh-instagram-mcp 已啟動。' })
+        }
+        const body = await readBody(req)
+        const mediaPkOrUrl = String(body.mediaPkOrUrl || body.media_pk || body.url || '').trim()
+        if (!mediaPkOrUrl) {
+          return sendJson(res, 400, { ok: false, error: '請輸入貼文或 Reel 的網址或 PK' })
+        }
+        const genRes = await generateRepostThoughtForMedia(
+          ctx,
+          activeConfig,
+          client,
+          {
+            mediaPkOrUrl,
+            mentionUsers: body.mentionUsers || body.mention_users,
+            userHint: body.userHint || body.user_hint,
+          },
+          log
+        )
+        return sendJson(res, genRes.ok ? 200 : 400, genRes)
+      }
+
+      // 立即執行貼文/Reel 轉發（支援 @用戶 + 填寫或自動生成對該內容的感想）
+      if (req.method === 'POST' && pathname === '/api/instagram/repost') {
+        const client = getMcpClient()
+        if (!client || !client.ready) {
+          return sendJson(res, 503, { ok: false, error: 'FastMCP 服務尚未就緒，請確認 dsh-instagram-mcp 已啟動。' })
+        }
+        const body = await readBody(req)
+        const mediaPkOrUrl = String(body.mediaPkOrUrl || body.media_pk || body.url || '').trim()
+        if (!mediaPkOrUrl) {
+          return sendJson(res, 400, { ok: false, error: '請輸入要轉發的貼文或 Reel 網址或 PK' })
+        }
+        const repostRes = await executeRepostMedia(
+          ctx,
+          activeConfig,
+          client,
+          ledger,
+          {
+            mediaPkOrUrl,
+            thoughtText: body.thoughtText ?? body.thought_text ?? '',
+            mentionUsers: body.mentionUsers ?? body.mention_users,
+            repostMode: body.repostMode || body.repost_mode || activeConfig.repostMode || 'story',
+            autoGenerateThought: body.autoGenerateThought !== false,
+            repostTemplate: body.repostTemplate || activeConfig.repostTemplate,
+            includeCredit: body.includeCredit !== false,
+            allowResend: Boolean(body.allowResend),
+          },
+          log
+        )
+        return sendJson(res, repostRes.ok ? 200 : 400, repostRes)
       }
 
       sendJson(res, 404, { ok: false, error: `Not found: ${pathname}` })

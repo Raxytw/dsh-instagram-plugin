@@ -26,6 +26,9 @@
    - 自動讀取 `~/.dsh/feiyu-mood/state.json` 與 `config.json`，計算時間半衰期衰減後的心情值 (`mood` 0–100) 與七維度情緒 (`happy`, `calm`, `sweet`, `heartache`, `worry`, `sad`, `jealous`)，自然滲透至對話語氣中（對外部網友自動遮蔽私人 `lastReason` 防止隱私外洩）。
 8. **與 `dsh-fish-memory` 建立隔離對話記憶庫（與私人對話記憶嚴格隔離）**：
    - 採用 `dsh-fish-memory` v2 標準結構將社交對話記憶獨立存放於 `~/.dsh/fish-memory/social_ig_dm_<username>.json` 與 `social_ig_rm_<username>.json`，並在 `fish-memory-config.json` 中標記 `sessions[storeId] = false`，與主人的私人對話 Session 記憶庫完全物理隔離，絕不讀取或外洩任何私人對話記憶。
+9. **貼文 / Reel 轉發機制 (`src/duty/repost.ts`)**：
+   - 支援將任意 Instagram 貼文或連續短片 (Reel) 轉發至 **限時動態 (`story`)**、**動態牆/Reels (`feed`)**、**私訊卡片 (`dm`)** 或 **限時動態 + 原貼文留言 (`story_and_comment`)**。
+   - 轉發文案支援 `@用戶`（可標註單一或多位用戶，未填時預設標註 MCP 主人帳號）並附上**對這個 Reel 或貼文內容的感想**（支援手動填寫感想，或由 AI 自動讀取該貼文/Reel 的內文、標題、字幕、視覺描述與圖片多模態內容動態生成具體感想）。
 
 ---
 
@@ -41,6 +44,8 @@
 | **`ig_check_status`** | 資訊 | 取得外掛程式連線狀態、登入用戶名與配額 | 無 |
 | **`ig_search_hashtag`** | 查詢 | 模糊/標籤搜尋指定關鍵字最新貼文（已過濾 AIGC） | `hashtag` (必填), `limit` |
 | **`ig_get_post_context`** | 唯讀 | 取得特定貼文或 Reel 之全文、視覺描述、字幕與留言清單 | `media_pk` (必填), `comment_limit` |
+| **`ig_repost_media`** | **寫入** | **轉發指定貼文或 Reel**，可在轉發文案中 `@用戶` 並填寫（或由 AI 讀取貼文自動生成）對該 Reel/貼文內容的感想 | `media_pk` (PK/Shortcode/網址), `mention_users`, `thought`, `repost_mode` (`story` \| `feed` \| `dm` \| `story_and_comment`) |
+| **`ig_generate_repost_thought`** | **唯讀/生成** | 讀取指定貼文或 Reel 的完整內容，由 AI 生成自然、無 AI 味的轉發感想與 `@用戶` 轉發文案預覽 | `media_pk`, `mention_users`, `user_thought_hint` |
 | **`ig_manual_patrol`** | 寫入 | 立即執行主題巡查（若達門檻將由 AI 生成推薦留言並 @主人） | `hashtag` (可選) |
 | **`ig_manual_reply_post`** | 寫入 | 對指定貼文發表新留言或回覆特定留言 | `media_pk`, `text`, `reply_to_comment_pk` |
 | **`ig_manual_send_dm`** | 寫入 | 對私訊對話發送訊息 | `thread_id`, `text` |
@@ -104,4 +109,18 @@ curl -X POST http://127.0.0.1:3080/api/instagram/run \
 ### 4. 讀取與更新配置 (`GET / POST /api/instagram/config`)
 ```bash
 curl http://127.0.0.1:3080/api/instagram/config
+```
+
+### 5. AI 讀取貼文/Reel 內容生成轉發感想 (`POST /api/instagram/repost/generate-thought`)
+```bash
+curl -X POST http://127.0.0.1:3080/api/instagram/repost/generate-thought \
+  -H "Content-Type: application/json" \
+  -d '{"media_pk":"https://www.instagram.com/reel/Cxyz123/","mention_users":["raxytw.dev"],"user_thought_hint":""}'
+```
+
+### 6. 執行貼文/Reel 轉發 (`POST /api/instagram/repost`)
+```bash
+curl -X POST http://127.0.0.1:3080/api/instagram/repost \
+  -H "Content-Type: application/json" \
+  -d '{"media_pk":"https://www.instagram.com/reel/Cxyz123/","mention_users":["raxytw.dev"],"thought":"這支短片把光影運鏡講得很透徹","repost_mode":"story"}'
 ```

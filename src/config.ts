@@ -38,6 +38,10 @@ export interface InstagramPluginConfig {
   maxDailyPatrolComments: number
   patrolPersonaPrompt: string
   recommendTemplate: string
+  repostOnPatrol?: boolean
+  repostMode?: 'story' | 'feed' | 'dm' | 'story_and_comment'
+  repostTemplate?: string
+  repostMentionUsers?: string[]
 
   // === 3. 被 @ 提問應答詳細條件 (Mention Reply Duty) ===
   mentionReplyEnabled: boolean
@@ -125,6 +129,10 @@ export const defaultConfig: InstagramPluginConfig = {
   patrolPersonaPrompt:
     '你是一個眼光敏銳、說話自然隨性的朋友。評估這則貼文是否具有實質技術、真實創作或應用價值（嚴格排除 AI 生成的影片、AI 動畫、AI 繪圖與 AI 生成文章），若值得推薦，請用真誠簡短的真人日常口吻（絕對不要 AI 味或客服腔）向主人推坑。',
   recommendTemplate: '@{targetUser} {summary}',
+  repostOnPatrol: false,
+  repostMode: 'story',
+  repostTemplate: '@{mentions} {thought}',
+  repostMentionUsers: [],
 
   // 3. 被 @ 提問應答
   mentionReplyEnabled: true,
@@ -221,6 +229,16 @@ export function sanitizeConfig(raw: any): InstagramPluginConfig {
       }
       return rawTpl
     })(),
+    repostOnPatrol: Boolean(unwrapValue(c.repostOnPatrol, defaultConfig.repostOnPatrol ?? false)),
+    repostMode: (['story', 'feed', 'dm', 'story_and_comment'].includes(
+      String(unwrapValue(c.repostMode, defaultConfig.repostMode) || 'story')
+    )
+      ? String(unwrapValue(c.repostMode, defaultConfig.repostMode) || 'story')
+      : 'story') as 'story' | 'feed' | 'dm' | 'story_and_comment',
+    repostTemplate: String(unwrapValue(c.repostTemplate, defaultConfig.repostTemplate || '@{mentions} {thought}') || '@{mentions} {thought}').trim(),
+    repostMentionUsers: Array.isArray(c.repostMentionUsers)
+      ? c.repostMentionUsers.map((u: any) => String(u || '').trim().replace(/^@/, '')).filter(Boolean)
+      : defaultConfig.repostMentionUsers || [],
 
     mentionReplyEnabled: unwrapValue(c.mentionReplyEnabled, defaultConfig.mentionReplyEnabled),
     mentionIntervalMinutes: unwrapValue(c.mentionIntervalMinutes, defaultConfig.mentionIntervalMinutes),
@@ -287,6 +305,19 @@ export function buildConfigSchema(z: any) {
     maxDailyPatrolComments: z.natural().default(10).description('每日巡查推坑留言上限（安全頻次保護）').extra('volatile', true),
     patrolPersonaPrompt: z.string().role('textarea').default(defaultConfig.patrolPersonaPrompt).description('巡查推坑口吻與評估準則 Prompt').extra('volatile', true),
     recommendTemplate: z.string().default(defaultConfig.recommendTemplate).description('推坑留言格式範本').extra('volatile', true),
+    repostOnPatrol: z.boolean().default(false).description('巡查發現符合主人喜好之貼文/Reel 時，是否同步執行轉發（附上 @用戶 與對該內容的感想）').extra('volatile', true),
+    repostMode: z
+      .union([
+        z.const('story').description('轉發至限時動態 (Story 卡片 + @用戶 Mention + 感想文字)'),
+        z.const('feed').description('轉發為動態貼文/Reel (Feed 貼文 + @用戶 + 感想文案)'),
+        z.const('dm').description('轉發至私訊 (DM 卡片分享 + @用戶與感想訊息)'),
+        z.const('story_and_comment').description('限時動態轉發 + 原貼文下留言推坑'),
+      ])
+      .default('story')
+      .description('貼文/Reel 轉發模式')
+      .extra('volatile', true),
+    repostTemplate: z.string().default('@{mentions} {thought}').description('轉發文案格式範本（支援 @{mentions} / @{targetUser} 與 {thought} 感想內容）').extra('volatile', true),
+    repostMentionUsers: z.array(z.string()).default([]).description('轉發文案中預設要 @ 的用戶清單（留空時自動沿用主人帳號）').extra('volatile', true),
 
     // === 被 @ 提問應答 ===
     mentionReplyEnabled: z.boolean().default(true).description('是否開啟被 @ 提問應答').extra('volatile', true),

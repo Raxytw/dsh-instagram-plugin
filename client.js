@@ -1194,7 +1194,13 @@ window.__ModuleLoader__.load({
         requireKeywords: cleanArr(c.requireKeywords, []),
         maxDailyPatrolComments: cleanNum(c.maxDailyPatrolComments, 10),
         patrolPersonaPrompt: cleanStr(c.patrolPersonaPrompt, '你是一個熱情、專業且具備敏銳眼光的科技社群助手。評估這則貼文是否具有實質技術或應用價值，若值得推薦，請用簡短吸引人的語氣向目標用戶推薦推坑。'),
-        recommendTemplate: cleanStr(c.recommendTemplate, '@{targetUser} 這篇關於 #{hashtag} 的內容很值得一看：{summary}'),
+        recommendTemplate: cleanStr(c.recommendTemplate, '@{targetUser} {summary}'),
+        repostOnPatrol: cleanBool(c.repostOnPatrol, false),
+        repostMode: ['story', 'feed', 'dm', 'story_and_comment'].includes(cleanStr(c.repostMode, 'story'))
+          ? cleanStr(c.repostMode, 'story')
+          : 'story',
+        repostTemplate: cleanStr(c.repostTemplate, '{mentions} {thought}'),
+        repostMentionUsers: cleanArr(c.repostMentionUsers, []),
 
         mentionReplyEnabled: cleanBool(c.mentionReplyEnabled, true),
         mentionIntervalMinutes: cleanNum(c.mentionIntervalMinutes, 5),
@@ -1272,6 +1278,89 @@ window.__ModuleLoader__.load({
       const [browseLoading, setBrowseLoading] = useState(false)
       const [browseNotice, setBrowseNotice] = useState(null)
       const [browseDiagnosis, setBrowseDiagnosis] = useState(null)
+
+      // 貼文 / Reel 轉發與感想工作台狀態
+      const [repostTargetInput, setRepostTargetInput] = useState('')
+      const [repostMentionsInput, setRepostMentionsInput] = useState('')
+      const [repostThoughtInput, setRepostThoughtInput] = useState('')
+      const [repostModeInput, setRepostModeInput] = useState('story')
+      const [repostGeneratingThought, setRepostGeneratingThought] = useState(false)
+      const [repostExecuting, setRepostExecuting] = useState(false)
+      const [repostResult, setRepostResult] = useState(null)
+
+      const handleGenerateRepostThought = async () => {
+        const target = repostTargetInput.trim()
+        if (!target) {
+          setRepostResult({ ok: false, error: '請先填入要轉發的 Instagram 貼文/Reel 網址、Shortcode 或 PK' })
+          return
+        }
+        setRepostGeneratingThought(true)
+        setRepostResult(null)
+        try {
+          const res = await jpost('/repost/generate-thought', {
+            media_pk: target,
+            mention_users: repostMentionsInput,
+            user_thought_hint: repostThoughtInput,
+          })
+          if (res?.ok && res.thought) {
+            setRepostThoughtInput(res.thought)
+            setRepostResult({
+              ok: true,
+              message: `✨ 已讀取 @${res.author || '創作者'} 的${res.is_reel ? ' Reel 短片' : '貼文'}內容並生成感想！您可自由修改後點擊轉發。`,
+            })
+          } else {
+            setRepostResult({ ok: false, error: res?.error || '生成感想失敗' })
+          }
+        } catch (e) {
+          setRepostResult({ ok: false, error: `生成感想異常: ${e.message}` })
+        } finally {
+          setRepostGeneratingThought(false)
+        }
+      }
+
+      const handleExecuteRepost = async () => {
+        const target = repostTargetInput.trim()
+        if (!target) {
+          setRepostResult({ ok: false, error: '請先填入要轉發的 Instagram 貼文/Reel 網址、Shortcode 或 PK' })
+          return
+        }
+        setRepostExecuting(true)
+        setRepostResult(null)
+        try {
+          const res = await jpost('/repost', {
+            media_pk: target,
+            mention_users: repostMentionsInput,
+            thought: repostThoughtInput,
+            repost_mode: repostModeInput || cfg.repostMode || 'story',
+          })
+          if (res?.ok) {
+            setRepostResult({
+              ok: true,
+              message: `🔁 轉發成功！模式: ${res.repost_mode || repostModeInput}｜標註: ${(res.mention_users || []).map((u) => '@' + u).join(' ') || '無'}｜轉發文案: 「${res.caption || ''}」`,
+            })
+            await refreshData()
+          } else {
+            setRepostResult({ ok: false, error: res?.error || '轉發失敗' })
+          }
+        } catch (e) {
+          setRepostResult({ ok: false, error: `轉發異常: ${e.message}` })
+        } finally {
+          setRepostExecuting(false)
+        }
+      }
+
+      const handleQuickRepostFromBrowse = (item) => {
+        const targetUrlOrPk =
+          item.url ||
+          (item.code ? `https://www.instagram.com/${item.is_reel ? 'reel' : 'p'}/${item.code}/` : '') ||
+          String(item.pk || item.id || '')
+        setRepostTargetInput(targetUrlOrPk)
+        setRepostResult({
+          ok: true,
+          message: `已帶入 @${item.author || '創作者'} 的${item.is_reel ? ' Reel' : '貼文'} (${targetUrlOrPk})，請填寫或點擊 AI 生成感想後執行轉發。`,
+        })
+        setTab('patrol')
+      }
 
       const fetchBrowse = async (mode) => {
         const targetMode = mode || browseSubtab
@@ -2323,19 +2412,34 @@ window.__ModuleLoader__.load({
                               h('span', { className: 'ig-media-count-item' }, h(Icon.Heart, { size: 11 }), Number(item.like_count || 0).toLocaleString()),
                               h('span', { className: 'ig-media-count-item' }, h(Icon.MessageCircle, { size: 11 }), Number(item.comment_count || 0).toLocaleString())
                             ),
-                            item.url || item.code
-                              ? h(
-                                  'a',
-                                  {
-                                    className: 'ig-media-ext-link',
-                                    href: item.url || `https://www.instagram.com/p/${item.code}/`,
-                                    target: '_blank',
-                                    rel: 'noopener noreferrer',
-                                    title: '在 Instagram 開啟貼文',
-                                  },
-                                  h(Icon.ExternalLink, { size: 12 })
-                                )
-                              : null
+                            h(
+                              'div',
+                              { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
+                              h(
+                                'button',
+                                {
+                                  type: 'button',
+                                  className: 'ig-button',
+                                  style: { height: '22px', padding: '0 7px', fontSize: '10px' },
+                                  title: '轉發此貼文或 Reel（可 @用戶 並填寫/AI生成感想）',
+                                  onClick: () => handleQuickRepostFromBrowse(item),
+                                },
+                                '🔁 轉發'
+                              ),
+                              item.url || item.code
+                                ? h(
+                                    'a',
+                                    {
+                                      className: 'ig-media-ext-link',
+                                      href: item.url || `https://www.instagram.com/p/${item.code}/`,
+                                      target: '_blank',
+                                      rel: 'noopener noreferrer',
+                                      title: '在 Instagram 開啟貼文',
+                                    },
+                                    h(Icon.ExternalLink, { size: 12 })
+                                  )
+                                : null
+                            )
                           )
                         )
                       )
@@ -2628,6 +2732,231 @@ window.__ModuleLoader__.load({
                   onChange: (e) => updateField('patrolPersonaPrompt', e.target.value),
                 }),
                 h('div', { className: 'ig-field-hint' }, '引導大語言模型分析貼文價值並撰寫自然的推薦詞')
+              ),
+
+              // ==============================================================
+              // 貼文 / Reel 轉發機制與感想工作台 (Repost & Thoughts Workbench)
+              // ==============================================================
+              h(
+                'div',
+                {
+                  style: {
+                    marginTop: '14px',
+                    paddingTop: '18px',
+                    borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '14px',
+                  },
+                },
+                h(
+                  'div',
+                  { className: 'ig-section-head' },
+                  h('div', { className: 'ig-section-title' }, '🔁 貼文 / Reel 轉發機制與感想工作台 (Repost & Thoughts)'),
+                  h(
+                    'div',
+                    { className: 'ig-section-desc' },
+                    '支援將貼文或連續短片 (Reel) 轉發至限時動態 (Story 卡片含原貼文跳轉貼紙)、動態牆/Reels 或私訊，並可在轉發文案中 @ 用戶及填寫/由 AI 自動生成對該貼文內容的感想。'
+                  )
+                ),
+
+                // 自動巡查轉發開關
+                h(
+                  'div',
+                  { className: 'ig-switch-cell' },
+                  h(
+                    'div',
+                    { className: 'ig-switch-text' },
+                    h('div', { className: 'ig-switch-name' }, '巡查發現精選貼文/Reel 時自動同步轉發'),
+                    h('div', { className: 'ig-switch-sub' }, '開啟後，背景巡查除了在原貼文留言推薦，也會自動以轉發文案 (@用戶 + 貼文感想) 執行轉發')
+                  ),
+                  h(
+                    'button',
+                    {
+                      className: `ig-toggle-btn ${cfg.repostOnPatrol ? 'on' : ''}`,
+                      onClick: () => updateField('repostOnPatrol', !cfg.repostOnPatrol),
+                    },
+                    h('span', { className: 'ig-toggle-thumb' })
+                  )
+                ),
+
+                h(
+                  'div',
+                  { className: 'ig-grid-2' },
+                  h(
+                    'div',
+                    { className: 'ig-field' },
+                    h('label', { className: 'ig-field-label' }, '預設轉發模式 (Repost Mode)'),
+                    h(
+                      'select',
+                      {
+                        className: 'ig-input-text',
+                        value: cfg.repostMode || 'story',
+                        onChange: (e) => {
+                          updateField('repostMode', e.target.value)
+                          setRepostModeInput(e.target.value)
+                        },
+                      },
+                      h('option', { value: 'story' }, '限時動態卡片轉發 (Story + 點擊跳轉原貼文 + @標註)'),
+                      h('option', { value: 'feed' }, '動態牆 / Reels 貼文轉發 (Feed / Clip Upload)'),
+                      h('option', { value: 'dm' }, '私訊卡片轉發 (DM Media Share + 感想)'),
+                      h('option', { value: 'story_and_comment' }, '限時動態轉發 + 原貼文留言雙重推薦')
+                    ),
+                    h('div', { className: 'ig-field-hint' }, '限時動態卡片會自動渲染原貼文縮圖、@原作者、您的感想與可點擊貼紙')
+                  ),
+                  h(
+                    'div',
+                    { className: 'ig-field' },
+                    h('label', { className: 'ig-field-label' }, '轉發文案模板 (Repost Template)'),
+                    h('input', {
+                      className: 'ig-input-text',
+                      value: cfg.repostTemplate || '{mentions} {thought}',
+                      placeholder: '{mentions} {thought}',
+                      onChange: (e) => updateField('repostTemplate', e.target.value),
+                    }),
+                    h('div', { className: 'ig-field-hint' }, '支援變數：{mentions} (@用戶清單)、{thought} (貼文感想)、{author} (原作者)')
+                  )
+                ),
+
+                h(
+                  'div',
+                  { className: 'ig-field' },
+                  h('label', { className: 'ig-field-label' }, '預設轉發 @ 標註用戶清單 (留空自動使用 MCP 主人帳號)'),
+                  h('input', {
+                    className: 'ig-input-text',
+                    value: Array.isArray(cfg.repostMentionUsers) ? cfg.repostMentionUsers.join(', ') : '',
+                    placeholder: '留空預設 @主人帳號；可填多個帳號以逗號分隔（如 friend_a, friend_b）',
+                    onChange: (e) =>
+                      updateField(
+                        'repostMentionUsers',
+                        e.target.value.split(/[,，\s]+/).map((s) => s.trim().replace(/^@/, '')).filter(Boolean)
+                      ),
+                  })
+                ),
+
+                // 手動 / AI 即時轉發工作台卡片
+                h(
+                  'div',
+                  {
+                    style: {
+                      padding: '14px 16px',
+                      borderRadius: '8px',
+                      background: 'rgba(59, 130, 246, 0.05)',
+                      border: '1px solid rgba(59, 130, 246, 0.22)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '12px',
+                    },
+                  },
+                  h(
+                    'div',
+                    { style: { fontSize: '13px', fontWeight: 600, color: '#60a5fa' } },
+                    '✨ 手動 / AI 貼文與 Reel 即時轉發工作台'
+                  ),
+                  h(
+                    'div',
+                    { className: 'ig-grid-2' },
+                    h(
+                      'div',
+                      { className: 'ig-field' },
+                      h('label', { className: 'ig-field-label' }, '目標貼文 / Reel 網址、Shortcode 或 PK'),
+                      h('input', {
+                        className: 'ig-input-text',
+                        value: repostTargetInput,
+                        placeholder: 'https://www.instagram.com/reel/xxx/ 或貼文 PK',
+                        onChange: (e) => setRepostTargetInput(e.target.value),
+                      }),
+                      h('div', { className: 'ig-field-hint' }, '可直接貼上 IG 網址，或在「瀏覽與探索」分頁點擊卡片上的「🔁 轉發」自動帶入')
+                    ),
+                    h(
+                      'div',
+                      { className: 'ig-field' },
+                      h('label', { className: 'ig-field-label' }, '轉發文案中要 @ 的用戶 (可多個)'),
+                      h('input', {
+                        className: 'ig-input-text',
+                        value: repostMentionsInput,
+                        placeholder: '留空自動 @主人帳號；多個請用逗號或空白分隔',
+                        onChange: (e) => setRepostMentionsInput(e.target.value),
+                      }),
+                      h('div', { className: 'ig-field-hint' }, '轉發文案會自動組合為「@用戶 + 感想」並在 Story/貼文中標註該用戶')
+                    )
+                  ),
+                  h(
+                    'div',
+                    { className: 'ig-field' },
+                    h(
+                      'div',
+                      { className: 'ig-field-label' },
+                      h('span', null, '對這個 Reel 或貼文內容的感想 (可手動填寫，或點擊右側按鈕由 AI 讀取貼文生成)'),
+                      h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'ig-button',
+                          style: { height: '24px', padding: '0 10px', fontSize: '11px', color: '#38bdf8', borderColor: 'rgba(56, 189, 248, 0.35)' },
+                          disabled: repostGeneratingThought,
+                          onClick: handleGenerateRepostThought,
+                        },
+                        h(Icon.Refresh, { size: 11 }),
+                        repostGeneratingThought ? '正在讀取貼文生成感想...' : '✨ AI 讀取貼文/Reel 內容生成感想'
+                      )
+                    ),
+                    h('textarea', {
+                      className: 'ig-textarea-input',
+                      value: repostThoughtInput,
+                      placeholder: '寫下你對這則 Reel 或貼文內容的具體感想（留空並點擊轉發時，系統也會自動讀取該貼文內容生成感想）...',
+                      onChange: (e) => setRepostThoughtInput(e.target.value),
+                    })
+                  ),
+                  h(
+                    'div',
+                    { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' } },
+                    h(
+                      'div',
+                      { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+                      h('span', { style: { fontSize: '12px', color: '#94a3b8' } }, '本次轉發方式：'),
+                      h(
+                        'select',
+                        {
+                          className: 'ig-browse-select',
+                          value: repostModeInput || cfg.repostMode || 'story',
+                          onChange: (e) => setRepostModeInput(e.target.value),
+                        },
+                        h('option', { value: 'story' }, '限時動態 Story 卡片'),
+                        h('option', { value: 'feed' }, '動態牆 / Reels 貼文'),
+                        h('option', { value: 'dm' }, '私訊 DM 卡片'),
+                        h('option', { value: 'story_and_comment' }, 'Story 轉發 + 原貼文留言')
+                      )
+                    ),
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'ig-button primary',
+                        disabled: repostExecuting || repostGeneratingThought,
+                        onClick: handleExecuteRepost,
+                      },
+                      h(Icon.Play, { size: 12 }),
+                      repostExecuting ? '正在執行轉發...' : '🔁 立即轉發貼文 / Reel'
+                    )
+                  ),
+                  repostResult
+                    ? h(
+                        'div',
+                        {
+                          style: {
+                            fontSize: '12px',
+                            padding: '8px 12px',
+                            borderRadius: '6px',
+                            background: repostResult.ok ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                            color: repostResult.ok ? '#34d399' : '#f87171',
+                            border: `1px solid ${repostResult.ok ? 'rgba(16, 185, 129, 0.25)' : 'rgba(239, 68, 68, 0.25)'}`,
+                          },
+                        },
+                        repostResult.ok ? repostResult.message : `❌ ${repostResult.error}`
+                      )
+                    : null
+                )
               )
             )
           : null,

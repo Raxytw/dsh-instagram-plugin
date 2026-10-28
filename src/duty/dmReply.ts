@@ -4,13 +4,15 @@
  * 職責：
  * 1. 定時呼叫未讀私訊獲取 Tool。
  * 2. 針對未處理的最新訊息進行白名單、用戶日上限與全域日上限檢驗。
- * 3. 組裝上下文 Prompt 讓 LLM 扮演社群助手生成簡短自然且友善的解答。
+ * 3. 透過統一 LLM 模組 (支援讀取外部插件 dsh-plugin-subscriptions 額度與自訂 API)
+ *    由 AI 即時生成自然回覆（嚴禁使用固定罐頭回覆）。
  * 4. 調用發送私訊 Tool 回覆用戶，並將訊息 ID 登記至帳本。
  * ============================================================================
  */
 
 import { InstagramPluginConfig } from '../config.js'
 import { LedgerManager } from '../lib/ledger.js'
+import { callLlmForInstagram } from '../lib/llm.js'
 import type { InstagramMcpClient } from '@luoyi-dsh/instagram-mcp'
 
 export interface DmReplyDutyResult {
@@ -20,71 +22,7 @@ export interface DmReplyDutyResult {
   notes: string[]
 }
 
-async function callLlmForDm(
-  ctx: any,
-  systemPrompt: string,
-  senderUser: string,
-  messageText: string
-): Promise<string> {
-  const userPrompt = `用戶 @${senderUser} 在 Instagram 私訊你說：
-"${messageText}"
-
-請以友善自然、溫暖簡潔的社群口吻回覆該用戶（回覆請限制在 80 字以內，不要使用長篇大論或刻板公文）：`
-
-  const llm = ctx?.get ? ctx.get('llm') : null
-  if (llm) {
-    try {
-      if (typeof llm.chat === 'function') {
-        const res = await llm.chat({
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-        })
-        return res?.content || res?.text || (typeof res === 'string' ? res : '')
-      }
-      if (typeof llm.complete === 'function') {
-        return await llm.complete(`${systemPrompt}\n\n${userPrompt}`)
-      }
-    } catch (e: any) {
-      console.warn(`[DmReply LLM] ctx.llm 調用異常: ${e.message}`)
-    }
-  }
-
-  // 外部 API 備援
-  const apiKey = process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY
-  const baseUrl = process.env.DEEPSEEK_API_BASE || process.env.OPENAI_BASE_URL || 'https://api.deepseek.com'
-
-  if (apiKey) {
-    try {
-      const resp = await fetch(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-          temperature: 0.7,
-        }),
-      })
-      if (resp.ok) {
-        const data = await resp.json() as any
-        return data.choices?.[0]?.message?.content || ''
-      }
-    } catch (err: any) {
-      console.warn(`[DmReply LLM] 外部 API 調用異常: ${err.message}`)
-    }
-  }
-
-  return '你好！很高興收到你的私訊，我已經記錄下來了，有任何最新消息再隨時通知你！'
-}
-
-/** 執行單輪未讀私訊收取與應答 */
+/** 執行單輪未讀私訊收取與 AI 應答 */
 export async function executeDmReplyDuty(
   ctx: any,
   config: InstagramPluginConfig,
@@ -131,12 +69,12 @@ export async function executeDmReplyDuty(
     log(`[DmReply] 獲取到 ${threads.length} 條私訊對話線程`)
 
     for (const thread of threads) {
-      if (replied >= maxPerRun || !ledger.canDoDaily('dmReplies', config.dmDailyCap) || !ledger.canDoHourly('dmReplies', config.maxHourlyDmReplies || 8)) {
+      if (
+        replied >= maxPerRun ||
+        !ledger.canDoDaily('dmReplies', config.dmDailyCap) ||
+        !ledger.canDoHourly('dmReplies', config.maxHourlyDmReplies || 8)
+      ) {
         break
-      }
-
-      if (!thread.unread) {
-        continue
       }
 
       const lastMsg = thread.last_message
@@ -152,16 +90,27 @@ export async function executeDmReplyDuty(
         continue
       }
 
+      // 若線程未讀，或最後一則為對方剛發送且尚未被帳本處理的訊息
+      const isPendingIncoming = thread.unread || (!lastMsg.is_outgoing && !ledger.hasSeenMessage(msgId))
+      if (!isPendingIncoming) {
+        continue
+      }
+
       processed++
 
-      // 取得發訊用戶資訊
-      const senderObj = (thread.users || []).find((u: any) => String(u.pk) === String(lastMsg.user_id))
+      // 取得發訊用戶資訊 (若 1 對 1 私訊未比對到 pk 則安全退回唯一的對話夥伴)
+      let senderObj = (thread.users || []).find((u: any) => String(u.pk) === String(lastMsg.user_id))
+      if (!senderObj && Array.isArray(thread.users) && thread.users.length === 1) {
+        senderObj = thread.users[0]
+      }
       const senderUsername = senderObj?.username || 'user'
       const senderPk = String(lastMsg.user_id || senderObj?.pk || threadId)
 
       // 2. 白名單模式過濾
       if (config.dmWhitelistOnly) {
-        const allowed = config.dmWhitelist && config.dmWhitelist.map((u) => u.replace(/^@/, '').toLowerCase()).includes(senderUsername.toLowerCase())
+        const allowed =
+          config.dmWhitelist &&
+          config.dmWhitelist.map((u) => u.replace(/^@/, '').toLowerCase()).includes(senderUsername.toLowerCase())
         if (!allowed) {
           log(`[DmReply] 用戶 @${senderUsername} 不在私訊白名單中，跳過回覆`)
           ledger.markSeenMessage(msgId, { threadId, userId: senderPk })
@@ -178,9 +127,37 @@ export async function executeDmReplyDuty(
 
       log(`[DmReply] 收到來自 @${senderUsername} 的未讀私訊: "${lastMsg.text}"`)
 
-      // 4. 調用 LLM 生成自然應答
-      const systemPrompt = config.dmPersonaPrompt || '你是一個禮貌溫暖的社群助手。'
-      const replyContent = await callLlmForDm(ctx, systemPrompt, senderUsername, lastMsg.text)
+      // 4. 調用 AI 模型生成自然應答 (支援讀取 dsh-plugin-subscriptions 外部額度與自訂 API)
+      const systemPrompt = config.dmPersonaPrompt || '你是一個禮貌溫暖的社群助理。'
+      const recentHistory = Array.isArray(thread.messages)
+        ? thread.messages
+            .slice(0, 6)
+            .reverse()
+            .map((m: any) => `${m.is_outgoing ? '[我]' : `[@${senderUsername}]`}: ${m.text || ''}`)
+            .join('\n')
+        : ''
+
+      const userPrompt = `【對話環境】：Instagram 私訊 (Direct Message)
+${recentHistory ? `【近期對話脈絡】：\n${recentHistory}\n\n` : ''}【私訊對象】：@${senderUsername}
+【對方最新訊息】："${lastMsg.text}"
+
+請依據人設以自然口吻直接生成回覆內容（字數控制在 80 字以內，不要加引號或解釋；若依人設判斷不需回覆，請只輸出 [NO_REPLY]）：`
+
+      let replyContent = ''
+      try {
+        replyContent = await callLlmForInstagram(ctx, config, systemPrompt, userPrompt, log)
+      } catch (llmErr: any) {
+        log(`[DmReply] ❌ AI 模型生成私訊回覆失敗，跳過發送 (不使用罐頭訊息): ${llmErr.message}`)
+        notes.push(`AI 生成失敗 (@${senderUsername}): ${llmErr.message}`)
+        continue
+      }
+
+      const cleanedReply = (replyContent || '').trim()
+      if (!cleanedReply || cleanedReply === '[NO_REPLY]' || cleanedReply.startsWith('[系統提示]')) {
+        log(`[DmReply] AI 判定不回覆或回傳系統提示 (${cleanedReply.slice(0, 30)})，標記已讀並跳過`)
+        ledger.markSeenMessage(msgId, { threadId, userId: senderPk })
+        continue
+      }
 
       // 防風控間隔等待
       if (replied > 0) {
@@ -188,17 +165,20 @@ export async function executeDmReplyDuty(
         await new Promise((r) => setTimeout(r, 15000))
       }
 
-      log(`[DmReply] 準備發送私訊回覆給 @${senderUsername}: "${replyContent}"`)
+      log(`[DmReply] 準備發送 AI 私訊回覆給 @${senderUsername}: "${cleanedReply}"`)
 
       // 5. 調用 MCP 發送私訊
       const sendRes = await mcp.igSendDm({
         thread_id: threadId,
-        text: replyContent.trim(),
+        text: cleanedReply,
         jitter_min: config.jitterMinSeconds,
         jitter_max: config.jitterMaxSeconds,
       })
 
-      if (sendRes?.in_cooldown || (sendRes?.error && /action block|feedback|checkpoint|please wait|rate limit/i.test(sendRes.error))) {
+      if (
+        sendRes?.in_cooldown ||
+        (sendRes?.error && /action block|feedback|checkpoint|please wait|rate limit/i.test(sendRes.error))
+      ) {
         ledger.triggerCooldown(config.cooldownMinutesOnBlock || 30, sendRes.error || 'Instagram 頻率風控阻擋')
         log(`[DmReply] 🚨 偵測到風控或熔斷保護，停止後續私訊回覆！`)
         notes.push(`觸發防風控熔斷: ${sendRes.error}`)
@@ -210,7 +190,7 @@ export async function executeDmReplyDuty(
         ledger.markSeenMessage(msgId, { threadId, userId: senderPk })
         ledger.incrementUserDm(senderPk)
         ledger.recordAction('dmReplies')
-        log(`[DmReply] 私訊回覆成功發送至線程 ${threadId}`)
+        log(`[DmReply] ✅ AI 私訊回覆成功發送至線程 ${threadId}`)
       } else {
         log(`[DmReply] 私訊發送失敗: ${sendRes?.error || JSON.stringify(sendRes)}`)
       }
@@ -223,6 +203,6 @@ export async function executeDmReplyDuty(
     }
   }
 
-  notes.push(`本輪私訊檢查結束：處理未讀 ${processed} 則，成功回覆 ${replied} 則`)
+  notes.push(`本輪私訊檢查結束：處理未讀 ${processed} 則，成功 AI 回覆 ${replied} 則`)
   return { ok: true, processedThreads: processed, repliedCount: replied, notes }
 }

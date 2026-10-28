@@ -22,6 +22,7 @@ import { registerIgTools } from './tools/igTools.js'
 import { executePatrolDuty } from './duty/patrol.js'
 import { executeMentionReplyDuty } from './duty/mentionReply.js'
 import { executeDmReplyDuty } from './duty/dmReply.js'
+import { getAuthorizedSubscriptionProviders, testLlmConnection } from './lib/llm.js'
 import {
   type InstagramMcpClient,
   getSharedMcpClient,
@@ -87,9 +88,12 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
   }
 
 
+  ;(globalThis as any).__DSH_INSTAGRAM_PLUGIN_CONFIG__ = activeConfig
+
   const saveConfig = (patch: Partial<InstagramPluginConfig>) => {
-    const cleanPatch = sanitizeConfig(patch)
+    const cleanPatch = sanitizeConfig({ ...activeConfig, ...patch })
     Object.assign(activeConfig, cleanPatch)
+    ;(globalThis as any).__DSH_INSTAGRAM_PLUGIN_CONFIG__ = activeConfig
     try {
       writeFileSync(configFile, JSON.stringify(activeConfig, null, 2), 'utf-8')
     } catch (e: any) {
@@ -143,7 +147,7 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
     if (activeConfig.dmReplyEnabled && !dmTimer) {
       const dmIntervalMs = Math.max(1, activeConfig.dmIntervalMinutes || 3) * 60 * 1000
       log(`啟動私訊雙向應答排程，間隔: ${activeConfig.dmIntervalMinutes} 分鐘`)
-      dmTimer = setInterval(async () => {
+      const runDm = async () => {
         const client = getMcpClient()
         if (isDisposed || !client) return
         try {
@@ -151,14 +155,16 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
         } catch (e: any) {
           log(`私訊排程執行異常: ${e.message}`)
         }
-      }, dmIntervalMs)
+      }
+      setTimeout(runDm, 5000)
+      dmTimer = setInterval(runDm, dmIntervalMs)
     }
 
     // 2. 被 @ 留言提問應答排程
     if (activeConfig.mentionReplyEnabled && !mentionTimer) {
       const mentionIntervalMs = Math.max(1, activeConfig.mentionIntervalMinutes || 5) * 60 * 1000
       log(`啟動被 @ 提問應答排程，間隔: ${activeConfig.mentionIntervalMinutes} 分鐘`)
-      mentionTimer = setInterval(async () => {
+      const runMention = async () => {
         const client = getMcpClient()
         if (isDisposed || !client) return
         try {
@@ -166,14 +172,16 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
         } catch (e: any) {
           log(`提及應答排程執行異常: ${e.message}`)
         }
-      }, mentionIntervalMs)
+      }
+      setTimeout(runMention, 12000)
+      mentionTimer = setInterval(runMention, mentionIntervalMs)
     }
 
     // 3. 標籤巡查推坑排程
     if (activeConfig.patrolEnabled && !patrolTimer) {
       const patrolIntervalMs = Math.max(1, activeConfig.patrolIntervalMinutes || 15) * 60 * 1000
       log(`啟動標籤巡查推坑排程，間隔: ${activeConfig.patrolIntervalMinutes} 分鐘`)
-      patrolTimer = setInterval(async () => {
+      const runPatrol = async () => {
         const client = getMcpClient()
         if (isDisposed || !client) return
         try {
@@ -181,7 +189,9 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
         } catch (e: any) {
           log(`巡查排程執行異常: ${e.message}`)
         }
-      }, patrolIntervalMs)
+      }
+      setTimeout(runPatrol, 20000)
+      patrolTimer = setInterval(runPatrol, patrolIntervalMs)
     }
   }
 
@@ -209,7 +219,17 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
 
       // 讀取當前完整配置
       if (req.method === 'GET' && pathname === '/api/instagram/config') {
-        return sendJson(res, 200, { ok: true, config: sanitizeConfig(activeConfig) })
+        const svc = getSharedMcpService()
+        const inheritedBot = svc?.loginStatus?.username || svc?.config?.username || activeConfig.botUsername || ''
+        const inheritedMaster = svc?.config?.masterUsername || activeConfig.targetMentionUser || ''
+        return sendJson(res, 200, {
+          ok: true,
+          config: sanitizeConfig({
+            ...activeConfig,
+            botUsername: inheritedBot,
+            targetMentionUser: inheritedMaster,
+          }),
+        })
       }
 
       // 儲存並即時更新配置
@@ -224,7 +244,17 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
         mentionTimer = null
         dmTimer = null
         setupSchedulers()
-        return sendJson(res, 200, { ok: true, config: sanitizeConfig(activeConfig) })
+        const svc = getSharedMcpService()
+        const inheritedBot = svc?.loginStatus?.username || svc?.config?.username || activeConfig.botUsername || ''
+        const inheritedMaster = svc?.config?.masterUsername || activeConfig.targetMentionUser || ''
+        return sendJson(res, 200, {
+          ok: true,
+          config: sanitizeConfig({
+            ...activeConfig,
+            botUsername: inheritedBot,
+            targetMentionUser: inheritedMaster,
+          }),
+        })
       }
 
       // 讀取當前運行狀態與今日統計
@@ -232,7 +262,8 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
         const client = getMcpClient()
         const status = getLoginStatus()
         const svc = getSharedMcpService()
-        const activeBotUser = activeConfig.botUsername || status?.username || svc?.loginStatus?.username || ''
+        const activeBotUser = svc?.loginStatus?.username || svc?.config?.username || status?.username || activeConfig.botUsername || ''
+        const activeMasterUser = svc?.config?.masterUsername || activeConfig.targetMentionUser || ''
         return sendJson(res, 200, {
           ok: true,
           mcpRunning: Boolean(client?.isRunning),
@@ -240,6 +271,7 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
           loginStatus: status,
           inheritedSession: true,
           botUsername: activeBotUser,
+          masterUsername: activeMasterUser,
           dailyStats: ledger.getDailyStats(),
         })
       }
@@ -323,25 +355,52 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
         return sendJson(res, 200, feedRes)
       }
 
-      // 4. 搜尋帳號或標籤 (Search Users / Tags)
+      // 4. 搜尋帳號、標籤或模糊搜尋貼文 (Search Users / Tags / Fuzzy Posts)
       if (req.method === 'GET' && pathname === '/api/instagram/browse/search') {
         const client = getMcpClient()
         if (!client || !client.ready) {
           return sendJson(res, 503, { ok: false, error: 'FastMCP 服務尚未就緒' })
         }
         const q = (url.searchParams.get('q') || '').trim()
-        const type = url.searchParams.get('type') || 'users'
+        const type = url.searchParams.get('type') || 'fuzzy'
         const limit = Number(url.searchParams.get('limit')) || 10
         if (!q) {
           return sendJson(res, 400, { ok: false, error: '缺少 q 搜尋關鍵字' })
         }
-        if (type === 'tags' || q.startsWith('#')) {
+        if (type === 'fuzzy' || type === 'posts') {
+          const fuzzyRes = typeof (client as any).igFuzzySearchPosts === 'function'
+            ? await (client as any).igFuzzySearchPosts(q, limit)
+            : await (client as any).callTool('ig_fuzzy_search_posts', { query: q, limit }, 75000)
+          return sendJson(res, 200, fuzzyRes)
+        } else if (type === 'tags' || q.startsWith('#')) {
           const tagsRes = await client.igSearchTags(q.replace(/^#/, ''), limit)
-          return sendJson(res, 200, tagsRes)
+          return sendJson(res, 200, { ...tagsRes, results: tagsRes?.tags || [] })
         } else {
           const usersRes = await client.igSearchUsers(q.replace(/^@/, ''), limit)
-          return sendJson(res, 200, usersRes)
+          return sendJson(res, 200, { ...usersRes, results: usersRes?.users || [] })
         }
+      }
+
+      // 取得 DSH 已授權之外部插件訂閱模型清單 (dsh-plugin-subscriptions)
+      if (req.method === 'GET' && pathname === '/api/instagram/subscriptions') {
+        const providers = getAuthorizedSubscriptionProviders()
+        return sendJson(res, 200, { ok: true, providers })
+      }
+
+      // 測試 LLM 模型連線 (支援外部插件訂閱額度與自訂 API)
+      if (req.method === 'POST' && pathname === '/api/instagram/test-llm') {
+        const body = await readBody(req)
+        const testConfig: Partial<InstagramPluginConfig> = {
+          ...activeConfig,
+          llmMode: body.llmMode || activeConfig.llmMode || 'auto',
+          subscriptionProvider: body.subscriptionProvider || activeConfig.subscriptionProvider || 'antigravity',
+          subscriptionModel: body.subscriptionModel || activeConfig.subscriptionModel || 'gemini-2.5-flash',
+          customLlmApiKey: body.apiKey !== undefined ? body.apiKey : activeConfig.customLlmApiKey,
+          customLlmApiBase: body.apiBase || activeConfig.customLlmApiBase || 'https://api.deepseek.com',
+          customLlmModel: body.model || activeConfig.customLlmModel || 'deepseek-chat',
+        }
+        const testRes = await testLlmConnection(ctx, testConfig, log)
+        return sendJson(res, testRes.ok ? 200 : 400, testRes)
       }
 
       // 手動立即執行一次全任務循環

@@ -79,6 +79,38 @@ export function registerIgTools(
     },
 
     {
+      name: 'ig_fuzzy_search_posts',
+      description: '在 Instagram 使用關鍵字進行「模糊搜尋」貼文與連續短片 (結合綜合 SERP、Reels 搜尋與相關公開創作者貼文，解決單純 Hashtag 標籤搜尋返回 0 則貼文的問題)',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: '模糊搜尋關鍵字（例如 ai, deepseek, coding, tech 等）',
+          },
+          limit: {
+            type: 'number',
+            description: '抓取貼文數量上限（預設 10 筆）',
+          },
+        },
+        required: ['query'],
+        additionalProperties: false,
+      },
+      execute: async (args: { query: string; limit?: number }) => {
+        const mcp = getMcp()
+        if (!mcp || !mcp.isRunning) {
+          return { ok: false, error: 'Instagram MCP 服務尚未就緒，請稍候' }
+        }
+        const q = (args.query || '').trim()
+        log(`[Tools] 模糊搜尋貼文: "${q}"`)
+        const res = typeof (mcp as any).igFuzzySearchPosts === 'function'
+          ? await (mcp as any).igFuzzySearchPosts(q, args.limit || 10)
+          : await (mcp as any).callTool('ig_fuzzy_search_posts', { query: q, limit: args.limit || 10 }, 75000)
+        return res
+      },
+    },
+
+    {
       name: 'ig_search_hashtag',
       description: '在 Instagram 搜尋指定標籤（Hashtag）的最新熱門貼文列表（如 ai, deepseek, tech 等），挑選優質內容無需使用瀏覽器',
       parameters: {

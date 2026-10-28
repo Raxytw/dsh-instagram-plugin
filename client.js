@@ -1183,11 +1183,14 @@ window.__ModuleLoader__.load({
 
         patrolEnabled: cleanBool(c.patrolEnabled, true),
         patrolIntervalMinutes: cleanNum(c.patrolIntervalMinutes, 15),
-        hashtags: cleanArr(c.hashtags, ['ai', 'deepseek', 'coding', 'tech']),
+        fuzzySearchEnabled: cleanBool(c.fuzzySearchEnabled, true),
+        fuzzyKeywords: cleanArr(c.fuzzyKeywords, cleanArr(c.hashtags, ['deepseek', 'coding', 'tech', 'github'])),
+        tagSearchEnabled: cleanBool(c.tagSearchEnabled, false),
+        hashtags: cleanArr(c.hashtags, ['deepseek', 'coding', 'tech', 'github']),
         patrolSearchLimit: cleanNum(c.patrolSearchLimit, 10),
         minLikes: cleanNum(c.minLikes, 20),
         minComments: cleanNum(c.minComments, 2),
-        excludeKeywords: cleanArr(c.excludeKeywords, ['廣告', '互粉', '代購', '抽獎', '博彩', '色情', '兼職']),
+        excludeKeywords: cleanArr(c.excludeKeywords, ['廣告', '互粉', '代購', '抽獎', '博彩', '色情', '兼職', 'AI生成', 'AI影片', 'AI動畫', 'AI繪圖', 'AI文章', 'AIGC', 'Midjourney', 'Stable Diffusion', 'Sora', 'Runway', 'Kling', '可靈', '即夢', 'AI配音', 'AI美女']),
         requireKeywords: cleanArr(c.requireKeywords, []),
         maxDailyPatrolComments: cleanNum(c.maxDailyPatrolComments, 10),
         patrolPersonaPrompt: cleanStr(c.patrolPersonaPrompt, '你是一個熱情、專業且具備敏銳眼光的科技社群助手。評估這則貼文是否具有實質技術或應用價值，若值得推薦，請用簡短吸引人的語氣向目標用戶推薦推坑。'),
@@ -1213,6 +1216,13 @@ window.__ModuleLoader__.load({
         jitterMinSeconds: cleanNum(c.jitterMinSeconds, 3),
         jitterMaxSeconds: cleanNum(c.jitterMaxSeconds, 6),
         pythonPath: cleanStr(c.pythonPath, ''),
+
+        llmMode: ['auto', 'subscriptions', 'custom'].includes(cleanStr(c.llmMode, 'auto')) ? cleanStr(c.llmMode, 'auto') : 'auto',
+        subscriptionProvider: cleanStr(c.subscriptionProvider, 'antigravity'),
+        subscriptionModel: cleanStr(c.subscriptionModel, 'gemini-2.5-flash'),
+        customLlmApiKey: cleanStr(c.customLlmApiKey, ''),
+        customLlmApiBase: cleanStr(c.customLlmApiBase, 'https://api.deepseek.com'),
+        customLlmModel: cleanStr(c.customLlmModel, 'deepseek-chat'),
       }
     }
 
@@ -1226,11 +1236,36 @@ window.__ModuleLoader__.load({
       const [runningDuty, setRunningDuty] = useState(false)
       const [msg, setMsg] = useState(null)
 
+      // LLM 測試與外部訂閱平台清單狀態 (參照 dsh-discord-plugin)
+      const [testingLlm, setTestingLlm] = useState(false)
+      const [llmTestResult, setLlmTestResult] = useState(null)
+      const [showApiKey, setShowApiKey] = useState(false)
+      const [subscriptionProviders, setSubscriptionProviders] = useState([
+        {
+          provider: 'antigravity',
+          label: 'Google Antigravity (Gemini 2.5 Flash / Claude)',
+          defaultModel: 'gemini-2.5-flash',
+          models: ['gemini-2.5-flash', 'gemini-3-flash', 'gemini-2.5-pro', 'claude-sonnet-5-5-medium'],
+        },
+        {
+          provider: 'codex',
+          label: 'OpenAI Codex (ChatGPT Plus)',
+          defaultModel: 'gpt-5.6-terra',
+          models: ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-luna'],
+        },
+        {
+          provider: 'grok',
+          label: 'xAI Grok (X Premium)',
+          defaultModel: 'grok-4.5',
+          models: ['grok-4.5', 'grok-4.6', 'grok-4.7'],
+        },
+      ])
+
       // 瀏覽與探索狀態
       const [browseSubtab, setBrowseSubtab] = useState('reels') // 'reels' | 'user' | 'explore' | 'search'
       const [browseUser, setBrowseUser] = useState('wired')
       const [browseQuery, setBrowseQuery] = useState('tech')
-      const [browseSearchType, setBrowseSearchType] = useState('users') // 'users' | 'tags'
+      const [browseSearchType, setBrowseSearchType] = useState('fuzzy') // 'fuzzy' | 'users' | 'tags'
       const [browseLimit, setBrowseLimit] = useState(6)
       const [browseItems, setBrowseItems] = useState([])
       const [browseUserMeta, setBrowseUserMeta] = useState(null)
@@ -1293,12 +1328,19 @@ window.__ModuleLoader__.load({
               setBrowseLoading(false)
               return
             }
-            const res = await jget(`/browse/search?q=${encodeURIComponent(q)}&type=${browseSearchType}`)
+            const res = await jget(`/browse/search?q=${encodeURIComponent(q)}&type=${browseSearchType}&limit=${browseLimit}`)
             if (res?.ok) {
-              setBrowseItems(res.results || [])
+              const items = browseSearchType === 'fuzzy'
+                ? (res.posts || [])
+                : (res.results || res.users || res.tags || [])
+              setBrowseItems(items)
               setBrowseUserMeta(null)
-              if ((res.results || []).length === 0) {
-                setBrowseDiagnosis(`未找到與「${q}」相符的${browseSearchType === 'users' ? '用戶' : '主題標籤'}。`)
+              if (items.length === 0) {
+                setBrowseDiagnosis(
+                  browseSearchType === 'fuzzy'
+                    ? `未找到與「${q}」相符的模糊搜尋貼文。`
+                    : `未找到與「${q}」相符的${browseSearchType === 'users' ? '用戶' : '主題標籤'}。`
+                )
               }
             } else {
               setBrowseNotice({ text: `搜尋失敗: ${res?.error || '未知錯誤'}`, type: 'warn' })
@@ -1311,12 +1353,51 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const handleTestLlm = async () => {
+        setTestingLlm(true)
+        setLlmTestResult(null)
+        try {
+          const payload = {
+            llmMode: cfg.llmMode || 'auto',
+            subscriptionProvider: cfg.subscriptionProvider || 'antigravity',
+            subscriptionModel: cfg.subscriptionModel || 'gemini-2.5-flash',
+            apiKey: cfg.customLlmApiKey,
+            apiBase: cfg.customLlmApiBase,
+            model: cfg.customLlmModel,
+          }
+          const res = await jpost('/test-llm', payload).catch(async () => {
+            // 若當前宿主未重載 /api/instagram/test-llm，自動借道 /api/discord/test-llm 進行實測
+            const dcResp = await fetch('/api/discord/test-llm', {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(payload),
+            })
+            return await dcResp.json()
+          })
+          setLlmTestResult(res)
+        } catch (e) {
+          setLlmTestResult({ ok: false, error: e.message })
+        } finally {
+          setTestingLlm(false)
+        }
+      }
+
       const refreshData = async () => {
         try {
-          const [cfgRes, statusRes] = await Promise.all([
+          const [cfgRes, statusRes, subRes] = await Promise.all([
             jget('/config'),
             jget('/status'),
+            jget('/subscriptions')
+              .catch(() =>
+                fetch('/api/discord/subscriptions', { credentials: 'same-origin' })
+                  .then((r) => (r.ok ? r.json() : null))
+                  .catch(() => null)
+              ),
           ])
+          if (subRes?.ok && Array.isArray(subRes.providers) && subRes.providers.length > 0) {
+            setSubscriptionProviders(subRes.providers)
+          }
           if (cfgRes?.ok) setCfg(normalizeConfig(cfgRes.config))
           if (statusRes?.ok) setStatus(statusRes)
         } catch (e) {
@@ -1525,39 +1606,61 @@ window.__ModuleLoader__.load({
                 )
               ),
 
-              // 業務身分設定
+              // 業務身分自動繼承展示 (由 Instagram FastMCP 統一設定，無需額外輸入)
               h(
                 'div',
                 { className: 'ig-grid-2', style: { marginTop: '8px' } },
                 h(
                   'div',
-                  { className: 'ig-field' },
-                  h('label', { className: 'ig-field-label' }, '機器人自身帳號名 (Bot Username)'),
-                  h('input', {
-                    className: 'ig-input-text',
-                    value: cleanStr(cfg.botUsername),
-                    placeholder: status?.loginStatus?.username ? `@${status.loginStatus.username} (自動繼承)` : 'bot_account_name',
-                    onChange: (e) => updateField('botUsername', e.target.value),
-                  }),
+                  {
+                    style: {
+                      background: 'rgba(255, 255, 255, 0.025)',
+                      border: '1px solid rgba(255, 255, 255, 0.08)',
+                      borderRadius: '8px',
+                      padding: '12px 14px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px',
+                    },
+                  },
+                  h('div', { style: { fontSize: '11px', color: '#94a3b8' } }, '機器人自身帳號 (自 MCP 繼承)'),
                   h(
                     'div',
-                    { className: 'ig-field-hint' },
-                    status?.loginStatus?.username
-                      ? `留空時自動沿用 MCP 登入帳號 (@${status.loginStatus.username})`
-                      : '用於辨識貼文留言區中標註 @機器人 的提問；留空時自動沿用 MCP 帳號'
-                  )
+                    { style: { fontSize: '14px', fontWeight: 600, color: '#34d399' } },
+                    (() => {
+                      let cached = {}
+                      try { cached = JSON.parse(localStorage.getItem('dsh_ig_mcp_accounts') || '{}') || {} } catch {}
+                      const bot = cached.username || status?.botUsername || status?.loginStatus?.username || cfg.botUsername || ''
+                      return bot ? `@${String(bot).replace(/^@/, '')}` : '尚未設定 (請至 MCP 面板設定)'
+                    })()
+                  ),
+                  h('div', { style: { fontSize: '11px', color: '#64748b' } }, '自動用於登入與貼文評論區 @機器人 提問識別')
                 ),
                 h(
                   'div',
-                  { className: 'ig-field' },
-                  h('label', { className: 'ig-field-label' }, '推坑目標用戶 (Target Mention)'),
-                  h('input', {
-                    className: 'ig-input-text',
-                    value: cleanStr(cfg.targetMentionUser),
-                    placeholder: '@your_main_account',
-                    onChange: (e) => updateField('targetMentionUser', e.target.value),
-                  }),
-                  h('div', { className: 'ig-field-hint' }, '巡查發現精選好文時，會在留言區 @ 推薦給此目標帳號')
+                  {
+                    style: {
+                      background: 'rgba(255, 255, 255, 0.025)',
+                      border: '1px solid rgba(255, 255, 255, 0.08)',
+                      borderRadius: '8px',
+                      padding: '12px 14px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px',
+                    },
+                  },
+                  h('div', { style: { fontSize: '11px', color: '#94a3b8' } }, '推坑目標主人帳號 (自 MCP 繼承)'),
+                  h(
+                    'div',
+                    { style: { fontSize: '14px', fontWeight: 600, color: '#60a5fa' } },
+                    (() => {
+                      let cached = {}
+                      try { cached = JSON.parse(localStorage.getItem('dsh_ig_mcp_accounts') || '{}') || {} } catch {}
+                      const master = cached.masterUsername || status?.masterUsername || status?.targetMentionUser || cfg.targetMentionUser || ''
+                      return master ? `@${String(master).replace(/^@/, '')}` : '尚未設定 (請至 MCP 面板設定)'
+                    })()
+                  ),
+                  h('div', { style: { fontSize: '11px', color: '#64748b' } }, '巡查發現精選好文時，自動在留言區 @ 此主人帳號')
                 )
               ),
 
@@ -1582,6 +1685,309 @@ window.__ModuleLoader__.load({
                   },
                   h(Icon.Refresh, { size: 13 }),
                   '重新整理狀態'
+                )
+              ),
+
+              // ==============================================================
+              // 模型與推理解析配置 (LLM API / 讀取外部訂閱插件額度，參照 dsh-discord-plugin)
+              // ==============================================================
+              h(
+                'div',
+                {
+                  style: {
+                    marginTop: '18px',
+                    paddingTop: '18px',
+                    borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '12px',
+                  },
+                },
+                h(
+                  'div',
+                  { className: 'ig-section-head' },
+                  h('div', { className: 'ig-section-title' }, 'AI 模型與外部插件額度配置 (DM / 被 @ 應答 / 巡查評估)'),
+                  h(
+                    'div',
+                    { className: 'ig-section-desc' },
+                    '私訊 (DM) 與貼文被 @ 提及 (RM) 回應全面由 AI 即時生成。可直接讀取 DSH 外部訂閱插件 (dsh-plugin-subscriptions) 提供的免費額度，或配置自訂 API 金鑰。'
+                  )
+                ),
+
+                // 1. 推理來源模式切換
+                h(
+                  'div',
+                  { style: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' } },
+                  [
+                    {
+                      key: 'subscriptions',
+                      title: '🌟 平台訂閱額度',
+                      sub: '讀取外部插件授權 (免 API Key)',
+                      badge: '推薦',
+                    },
+                    {
+                      key: 'auto',
+                      title: '⚡ 自動偵測',
+                      sub: '優先自訂，未填或餘額不足走訂閱',
+                    },
+                    {
+                      key: 'custom',
+                      title: '🔑 自訂 API 金鑰',
+                      sub: 'DeepSeek / OpenAI / Groq / 本地',
+                    },
+                  ].map((m) => {
+                    const active = (cfg.llmMode || 'auto') === m.key
+                    return h(
+                      'div',
+                      {
+                        key: m.key,
+                        onClick: () => updateField('llmMode', m.key),
+                        style: {
+                          padding: '10px 12px',
+                          borderRadius: '8px',
+                          cursor: 'pointer',
+                          border: active ? '1px solid #3b82f6' : '1px solid rgba(255,255,255,0.08)',
+                          background: active ? 'rgba(59, 130, 246, 0.14)' : 'rgba(255,255,255,0.02)',
+                          transition: 'all 0.15s ease',
+                        },
+                      },
+                      h(
+                        'div',
+                        { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' } },
+                        h('div', { style: { fontSize: '13px', fontWeight: 600, color: active ? '#ffffff' : '#cbd5e1' } }, m.title),
+                        m.badge &&
+                          h(
+                            'span',
+                            {
+                              style: {
+                                fontSize: '10px',
+                                padding: '1px 5px',
+                                borderRadius: '4px',
+                                background: '#10b981',
+                                color: '#000',
+                                fontWeight: 700,
+                              },
+                            },
+                            m.badge
+                          )
+                      ),
+                      h('div', { style: { fontSize: '11px', color: '#94a3b8', lineHeight: 1.3 } }, m.sub)
+                    )
+                  })
+                ),
+
+                // 2. 平台訂閱設定面板
+                ((cfg.llmMode || 'auto') === 'subscriptions' || (cfg.llmMode || 'auto') === 'auto') &&
+                  h(
+                    'div',
+                    {
+                      style: {
+                        padding: '12px 14px',
+                        borderRadius: '8px',
+                        background: 'rgba(16, 185, 129, 0.05)',
+                        border: '1px solid rgba(16, 185, 129, 0.2)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '10px',
+                      },
+                    },
+                    h(
+                      'div',
+                      { style: { fontSize: '12px', fontWeight: 600, color: '#10b981' } },
+                      '🌟 DSH 外部插件訂閱額度 (dsh-plugin-subscriptions)'
+                    ),
+                    h(
+                      'div',
+                      { className: 'ig-grid-2' },
+                      h(
+                        'div',
+                        { className: 'ig-field' },
+                        h('label', { className: 'ig-label-row' }, h('span', { className: 'ig-label-text' }, '選擇訂閱平台服務商')),
+                        h(
+                          'select',
+                          {
+                            className: 'ig-input-text',
+                            value: cfg.subscriptionProvider || 'antigravity',
+                            onChange: (e) => {
+                              const selP = e.target.value
+                              updateField('subscriptionProvider', selP)
+                              const found = subscriptionProviders.find((p) => p.provider === selP)
+                              if (found) updateField('subscriptionModel', found.defaultModel)
+                            },
+                          },
+                          subscriptionProviders.map((p) => h('option', { key: p.provider, value: p.provider }, p.label))
+                        )
+                      ),
+                      h(
+                        'div',
+                        { className: 'ig-field' },
+                        h('label', { className: 'ig-label-row' }, h('span', { className: 'ig-label-text' }, '模型名稱 (Model)')),
+                        h('input', {
+                          className: 'ig-input-text',
+                          value: cfg.subscriptionModel || 'gemini-2.5-flash',
+                          placeholder: 'gemini-2.5-flash',
+                          onChange: (e) => updateField('subscriptionModel', e.target.value),
+                        })
+                      )
+                    ),
+                    h(
+                      'div',
+                      { style: { display: 'flex', flexWrap: 'wrap', gap: '6px' } },
+                      (() => {
+                        const curP = cfg.subscriptionProvider || 'antigravity'
+                        const found = subscriptionProviders.find((p) => p.provider === curP)
+                        const models = found?.models || ['gemini-2.5-flash', 'gemini-3-flash', 'claude-sonnet-5-5-medium']
+                        return models.map((m) =>
+                          h(
+                            'button',
+                            {
+                              key: m,
+                              type: 'button',
+                              className: 'ig-button',
+                              style: {
+                                fontSize: '11px',
+                                padding: '3px 8px',
+                                height: 'auto',
+                                background: (cfg.subscriptionModel || 'gemini-2.5-flash') === m ? 'rgba(16,185,129,0.2)' : undefined,
+                                borderColor: (cfg.subscriptionModel || 'gemini-2.5-flash') === m ? '#10b981' : undefined,
+                              },
+                              onClick: () => updateField('subscriptionModel', m),
+                            },
+                            m
+                          )
+                        )
+                      })()
+                    )
+                  ),
+
+                // 3. 自訂 API 金鑰設定面板
+                ((cfg.llmMode || 'auto') === 'custom' || (cfg.llmMode || 'auto') === 'auto') &&
+                  h(
+                    'div',
+                    {
+                      style: {
+                        padding: '12px 14px',
+                        borderRadius: '8px',
+                        background: 'rgba(255, 255, 255, 0.02)',
+                        border: '1px solid rgba(255, 255, 255, 0.08)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '10px',
+                      },
+                    },
+                    h(
+                      'div',
+                      { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' } },
+                      h('span', { style: { fontSize: '11px', color: '#94a3b8', marginRight: '4px' } }, '快速填入預設：'),
+                      [
+                        { label: 'DeepSeek 官方', base: 'https://api.deepseek.com', model: 'deepseek-chat' },
+                        { label: 'OpenAI (GPT-4o-mini)', base: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+                        { label: 'Groq (高速免費)', base: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile' },
+                        { label: 'SiliconFlow', base: 'https://api.siliconflow.cn/v1', model: 'deepseek-ai/DeepSeek-V3' },
+                        { label: '本地 Ollama', base: 'http://localhost:11434/v1', model: 'llama3' },
+                      ].map((p, idx) =>
+                        h(
+                          'button',
+                          {
+                            key: idx,
+                            type: 'button',
+                            className: 'ig-button',
+                            style: { fontSize: '11px', padding: '3px 8px', height: 'auto' },
+                            onClick: () => {
+                              updateField('customLlmApiBase', p.base)
+                              updateField('customLlmModel', p.model)
+                            },
+                          },
+                          p.label
+                        )
+                      )
+                    ),
+                    h(
+                      'div',
+                      { className: 'ig-field' },
+                      h(
+                        'div',
+                        { className: 'ig-label-row' },
+                        h('span', { className: 'ig-label-text' }, '自訂 API Key (使用外部插件訂閱額度或本地 Ollama 時可留空)'),
+                        h(
+                          'button',
+                          {
+                            type: 'button',
+                            style: { background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '11px' },
+                            onClick: () => setShowApiKey(!showApiKey),
+                          },
+                          showApiKey ? '隱藏金鑰' : '顯示金鑰'
+                        )
+                      ),
+                      h('input', {
+                        className: 'ig-input-text',
+                        type: showApiKey ? 'text' : 'password',
+                        placeholder: 'sk-xxxx... (留空自動使用 DSH 訂閱額度)',
+                        value: cfg.customLlmApiKey || '',
+                        onChange: (e) => updateField('customLlmApiKey', e.target.value),
+                      })
+                    ),
+                    h(
+                      'div',
+                      { className: 'ig-grid-2' },
+                      h(
+                        'div',
+                        { className: 'ig-field' },
+                        h('label', { className: 'ig-label-row' }, h('span', { className: 'ig-label-text' }, 'API Base URL')),
+                        h('input', {
+                          className: 'ig-input-text',
+                          value: cfg.customLlmApiBase || 'https://api.deepseek.com',
+                          placeholder: 'https://api.deepseek.com',
+                          onChange: (e) => updateField('customLlmApiBase', e.target.value),
+                        })
+                      ),
+                      h(
+                        'div',
+                        { className: 'ig-field' },
+                        h('label', { className: 'ig-label-row' }, h('span', { className: 'ig-label-text' }, '自訂模型名稱')),
+                        h('input', {
+                          className: 'ig-input-text',
+                          value: cfg.customLlmModel || 'deepseek-chat',
+                          placeholder: 'deepseek-chat',
+                          onChange: (e) => updateField('customLlmModel', e.target.value),
+                        })
+                      )
+                    )
+                  ),
+
+                // 測試 LLM 連線按鈕與結果
+                h(
+                  'div',
+                  { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } },
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'ig-button primary',
+                      disabled: testingLlm,
+                      onClick: handleTestLlm,
+                    },
+                    h(Icon.Refresh, { size: 13 }),
+                    testingLlm ? '正在測試 AI 模型連線...' : '測試 AI 模型連線'
+                  ),
+                  llmTestResult &&
+                    h(
+                      'div',
+                      {
+                        style: {
+                          fontSize: '12px',
+                          padding: '6px 10px',
+                          borderRadius: '6px',
+                          background: llmTestResult.ok ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                          color: llmTestResult.ok ? '#34d399' : '#f87171',
+                          border: `1px solid ${llmTestResult.ok ? 'rgba(16, 185, 129, 0.25)' : 'rgba(239, 68, 68, 0.25)'}`,
+                          flex: 1,
+                        },
+                      },
+                      llmTestResult.ok
+                        ? `✅ 連線成功！[${llmTestResult.providerUsed || '已連線'}] 模型回覆: "${llmTestResult.answer}"`
+                        : `❌ 連線失敗: ${llmTestResult.error}`
+                    )
                 )
               )
             )
@@ -1749,7 +2155,12 @@ window.__ModuleLoader__.load({
                         h('span', { className: 'ig-browse-input-icon' }, h(Icon.Search, { size: 14 })),
                         h('input', {
                           className: 'ig-browse-input',
-                          placeholder: browseSearchType === 'users' ? '搜尋使用者名稱或暱稱...' : '搜尋主題標籤（無需輸入 #）...',
+                          placeholder:
+                            browseSearchType === 'fuzzy'
+                              ? '輸入關鍵字模糊搜尋貼文與短片（如 ai, deepseek, coding）...'
+                              : browseSearchType === 'users'
+                              ? '搜尋使用者名稱或暱稱...'
+                              : '搜尋主題標籤（無需輸入 #）...',
                           value: browseQuery,
                           onChange: (e) => setBrowseQuery(e.target.value),
                           onKeyDown: (e) => e.key === 'Enter' && fetchBrowse('search'),
@@ -1761,8 +2172,12 @@ window.__ModuleLoader__.load({
                           key: 'search-type',
                           className: 'ig-browse-select',
                           value: browseSearchType,
-                          onChange: (e) => setBrowseSearchType(e.target.value),
+                          onChange: (e) => {
+                            setBrowseSearchType(e.target.value)
+                            setBrowseItems([])
+                          },
                         },
+                        h('option', { value: 'fuzzy' }, '模糊搜尋貼文 (Fuzzy Posts)'),
                         h('option', { value: 'users' }, '搜尋使用者 (Users)'),
                         h('option', { value: 'tags' }, '搜尋標籤 (Tags)')
                       ),
@@ -1842,8 +2257,8 @@ window.__ModuleLoader__.load({
                   )
                 : null,
 
-              // 貼文 / Reel 卡片網格 (當非搜尋或搜尋為媒體時)
-              browseSubtab !== 'search' && browseItems.length > 0
+              // 貼文 / Reel 卡片網格 (當非搜尋，或搜尋模式為 fuzzy 模糊貼文搜尋時)
+              (browseSubtab !== 'search' || browseSearchType === 'fuzzy') && browseItems.length > 0
                 ? h(
                     'div',
                     { className: 'ig-media-grid' },
@@ -1928,8 +2343,8 @@ window.__ModuleLoader__.load({
                   )
                 : null,
 
-              // 搜尋結果列表 (當 subtab === 'search')
-              browseSubtab === 'search' && browseItems.length > 0
+              // 搜尋結果列表 (當 subtab === 'search' 且為 users 或 tags)
+              browseSubtab === 'search' && browseSearchType !== 'fuzzy' && browseItems.length > 0
                 ? h(
                     'div',
                     { className: 'ig-search-grid' },
@@ -2020,7 +2435,7 @@ window.__ModuleLoader__.load({
           : null,
 
         // ====================================================================
-        // TAB 3: 標籤巡查推坑 (Hashtag Patrol)
+        // TAB 3: 關鍵字模糊搜尋與標籤巡查推坑 (Patrol)
         // ====================================================================
         tab === 'patrol'
           ? h(
@@ -2029,8 +2444,8 @@ window.__ModuleLoader__.load({
               h(
                 'div',
                 { className: 'ig-section-head' },
-                h('div', { className: 'ig-section-title' }, '標籤巡查與精選推坑 (Patrol Duty)'),
-                h('div', { className: 'ig-section-desc' }, '定期巡查特定主題標籤，經由 LLM 評估貼文品質後，主動在留言區 @目標用戶推薦優質內容。')
+                h('div', { className: 'ig-section-title' }, '模糊搜尋與標籤巡查推坑 (Patrol Duty)'),
+                h('div', { className: 'ig-section-desc' }, '定期以「關鍵字模糊搜尋」或「主題標籤 (Tags)」抓取貼文，經由 LLM 評估品質後，主動在留言區 @目標用戶推薦優質內容。')
               ),
 
               h(
@@ -2039,8 +2454,8 @@ window.__ModuleLoader__.load({
                 h(
                   'div',
                   { className: 'ig-switch-text' },
-                  h('div', { className: 'ig-switch-name' }, '啟用標籤背景自動巡查'),
-                  h('div', { className: 'ig-switch-sub' }, '依據設定的週期於背景定期抓取熱門標籤貼文進行推坑評估')
+                  h('div', { className: 'ig-switch-name' }, '啟用背景自動巡查任務'),
+                  h('div', { className: 'ig-switch-sub' }, '依據設定的週期於背景定期抓取貼文進行推坑評估')
                 ),
                 h(
                   'button',
@@ -2050,6 +2465,81 @@ window.__ModuleLoader__.load({
                   },
                   h('span', { className: 'ig-toggle-thumb' })
                 )
+              ),
+
+              // 模糊搜尋開關 (預設開啟)
+              h(
+                'div',
+                { className: 'ig-switch-cell' },
+                h(
+                  'div',
+                  { className: 'ig-switch-text' },
+                  h('div', { className: 'ig-switch-name' }, '啟用模糊搜尋抓取貼文 (Fuzzy Search — 推薦)'),
+                  h('div', { className: 'ig-switch-sub' }, '結合 Instagram 綜合搜尋 (top_serp)、Reels 搜尋與相關創作者貼文，解決單純 Tags 經常抓到 0 則貼文的問題')
+                ),
+                h(
+                  'button',
+                  {
+                    className: `ig-toggle-btn ${cfg.fuzzySearchEnabled !== false ? 'on' : ''}`,
+                    onClick: () => updateField('fuzzySearchEnabled', !(cfg.fuzzySearchEnabled !== false)),
+                  },
+                  h('span', { className: 'ig-toggle-thumb' })
+                )
+              ),
+
+              h(
+                'div',
+                { className: 'ig-field' },
+                h('label', { className: 'ig-field-label' }, '模糊搜尋關鍵字 (Fuzzy Search Keywords)'),
+                h('input', {
+                  className: 'ig-input-text',
+                  value: Array.isArray(cfg.fuzzyKeywords) ? cfg.fuzzyKeywords.join(', ') : '',
+                  placeholder: 'ai, deepseek, coding, tech',
+                  disabled: cfg.fuzzySearchEnabled === false,
+                  onChange: (e) =>
+                    updateField(
+                      'fuzzyKeywords',
+                      e.target.value.split(/[,，]+/).map((s) => s.trim().replace(/^#/, '')).filter(Boolean)
+                    ),
+                }),
+                h('div', { className: 'ig-field-hint' }, '多個關鍵字請以逗號分隔（支援模糊匹配貼文、短片與相關創作者）')
+              ),
+
+              // Tags 搜尋開關 (保留並用按鈕控制開關，預設關閉)
+              h(
+                'div',
+                { className: 'ig-switch-cell' },
+                h(
+                  'div',
+                  { className: 'ig-switch-text' },
+                  h('div', { className: 'ig-switch-name' }, '啟用 Tags 標籤搜尋抓取貼文 (Hashtag Search — 保留備用)'),
+                  h('div', { className: 'ig-switch-sub' }, '預設關閉（因 IG 官方常限制公開 Hashtag API 返回 0 則貼文）；保留此功能，可隨時用按鈕切換開關')
+                ),
+                h(
+                  'button',
+                  {
+                    className: `ig-toggle-btn ${cfg.tagSearchEnabled ? 'on' : ''}`,
+                    onClick: () => updateField('tagSearchEnabled', !cfg.tagSearchEnabled),
+                  },
+                  h('span', { className: 'ig-toggle-thumb' })
+                )
+              ),
+
+              h(
+                'div',
+                { className: 'ig-field', style: { opacity: cfg.tagSearchEnabled ? 1 : 0.6 } },
+                h('label', { className: 'ig-field-label' }, '監聽標籤 (Hashtags — 開啟上方 Tags 搜尋按鈕時生效)'),
+                h('input', {
+                  className: 'ig-input-text',
+                  value: Array.isArray(cfg.hashtags) ? cfg.hashtags.join(', ') : '',
+                  placeholder: 'ai, deepseek, coding, python',
+                  onChange: (e) =>
+                    updateField(
+                      'hashtags',
+                      e.target.value.split(/[,，]+/).map((s) => s.trim().replace(/^#/, '')).filter(Boolean)
+                    ),
+                }),
+                h('div', { className: 'ig-field-hint' }, '多個標籤請以逗號分隔，無需輸入 # 符號（已保留標籤設定，由上方按鈕控制是否執行）')
               ),
 
               h(
@@ -2079,23 +2569,6 @@ window.__ModuleLoader__.load({
                   }),
                   h('div', { className: 'ig-field-hint' }, '每日累計推坑留言達此上限後自動休眠，防止頻率過高')
                 )
-              ),
-
-              h(
-                'div',
-                { className: 'ig-field' },
-                h('label', { className: 'ig-field-label' }, '監聽標籤 (Hashtags)'),
-                h('input', {
-                  className: 'ig-input-text',
-                  value: Array.isArray(cfg.hashtags) ? cfg.hashtags.join(', ') : '',
-                  placeholder: 'ai, deepseek, coding, python',
-                  onChange: (e) =>
-                    updateField(
-                      'hashtags',
-                      e.target.value.split(',').map((s) => s.trim().replace(/^#/, '')).filter(Boolean)
-                    ),
-                }),
-                h('div', { className: 'ig-field-hint' }, '多個標籤請以逗號分隔，無需輸入 # 符號')
               ),
 
               h(

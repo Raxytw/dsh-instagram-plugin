@@ -1,17 +1,27 @@
 /**
- * src/duty/mentionReply.ts —— 貼文留言 @ 提問監聽與上下文推理應答 (Mention Reply Duty)
+ * src/duty/mentionReply.ts —— 貼文與 Reel 留言 @ 提問監聽與多模態上下文 AI 推理應答 (Mention Reply / RM Duty)
  * ============================================================================
  * 職責：
- * 1. 監聽貼文評論區，尋找含有 @機器人帳號 且尚未處理的提問留言。
- * 2. 進行黑白名單、Round Cap（單篇上限輪數）與當日配額驗證。
- * 3. 取得該貼文的完整上下文（發布者、內文、相鄰留言）。
- * 4. 由 LLM 針對貼文內容進行推理思考，生成精簡專業之解答。
+ * 1. 多來源探索候選貼文與 Reel PK：
+ *    - Instagram 通知收件匣 (news/inbox) 近期提及與回覆通知 (ig_get_recent_mentions)
+ *    - 目標主人帳號 (Master Username) 最新貼文與連續短片 (Medias & Reels)
+ *    - 機器人帳號自身最新貼文與連續短片
+ *    - 本插件巡查帳本 (ledger.json) 與 dsh-instagram-scroll 滾動帳本 (scroll_ledger.json) 近期互動過之貼文/Reel
+ * 2. 進行黑白名單、Round Cap（單篇上限輪數）與當日/每小時配額驗證。
+ * 3. 完整讀取被 @ 的那則貼文或 Reel 內容（內文 caption、標題 title、無障礙視覺描述 accessibility_caption、
+ *    Reel 音訊/配樂資訊 audio_info、影片字幕 video_subtitles、圖片/封面視覺畫面 image_urls，以及父留言與相鄰留言脈絡）。
+ * 4. 透過統一 LLM 模組（支援讀取外部插件 dsh-plugin-subscriptions 額度、多模態視覺看圖與自訂 API），
+ *    嚴格依據該則貼文或 Reel 的真實內容回答，嚴禁瞎編或套用固定罐頭回覆。
  * 5. 以巢狀子留言（Reply）回覆提問用戶，並登記留言 PK 至帳本。
  * ============================================================================
  */
 
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { InstagramPluginConfig } from '../config.js'
 import { LedgerManager } from '../lib/ledger.js'
+import { callLlmForInstagram } from '../lib/llm.js'
 import type { InstagramMcpClient } from '@luoyi-dsh/instagram-mcp'
 
 export interface MentionReplyDutyResult {
@@ -21,75 +31,7 @@ export interface MentionReplyDutyResult {
   notes: string[]
 }
 
-async function callLlmForReply(
-  ctx: any,
-  systemPrompt: string,
-  postContext: string,
-  questionUser: string,
-  questionText: string
-): Promise<string> {
-  const userPrompt = `【貼文上下文】：
-${postContext}
-
-【提問用戶】：@${questionUser}
-【用戶問題】：${questionText}
-
-請作為專業助理，依據上方貼文內容與前後脈絡思考後給予簡短、精準、友善的解答（回覆長度請保持在 120 字以內，不要廢話）：`
-
-  const llm = ctx?.get ? ctx.get('llm') : null
-  if (llm) {
-    try {
-      if (typeof llm.chat === 'function') {
-        const res = await llm.chat({
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-        })
-        return res?.content || res?.text || (typeof res === 'string' ? res : '')
-      }
-      if (typeof llm.complete === 'function') {
-        return await llm.complete(`${systemPrompt}\n\n${userPrompt}`)
-      }
-    } catch (e: any) {
-      console.warn(`[MentionReply LLM] ctx.llm 調用異常: ${e.message}`)
-    }
-  }
-
-  // 外部 API 備援
-  const apiKey = process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY
-  const baseUrl = process.env.DEEPSEEK_API_BASE || process.env.OPENAI_BASE_URL || 'https://api.deepseek.com'
-
-  if (apiKey) {
-    try {
-      const resp = await fetch(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-          temperature: 0.6,
-        }),
-      })
-      if (resp.ok) {
-        const data = await resp.json() as any
-        return data.choices?.[0]?.message?.content || ''
-      }
-    } catch (err: any) {
-      console.warn(`[MentionReply LLM] 外部 API 調用異常: ${err.message}`)
-    }
-  }
-
-  return '你好！已收到你的提問，貼文重點在於技術架構與實踐方案，如有具體疑問歡迎進一步討論。'
-}
-
-/** 執行單輪被 @ 留言監聽與應答 */
+/** 執行單輪被 @ 留言監聽與 AI 應答 */
 export async function executeMentionReplyDuty(
   ctx: any,
   config: InstagramPluginConfig,
@@ -116,10 +58,10 @@ export async function executeMentionReplyDuty(
   }
 
   const svc = (globalThis as any).__DSH_INSTAGRAM_MCP__
-  const fallbackUser = svc?.loginStatus?.username || ''
-  const botName = (config.botUsername || fallbackUser || '').replace(/^@/, '').trim().toLowerCase()
+  const fallbackUser = svc?.loginStatus?.username || svc?.config?.username || ''
+  const botName = (fallbackUser || config.botUsername || '').replace(/^@/, '').trim().toLowerCase()
   if (!botName) {
-    notes.push('未設定機器人帳號名稱且 MCP 尚未登入 (botUsername 為空)，無法比對被 @ 留言')
+    notes.push('MCP 尚未設定或登入機器人帳號，無法比對被 @ 留言')
     return { ok: true, scannedComments: 0, repliedCount: 0, notes }
   }
 
@@ -137,14 +79,102 @@ export async function executeMentionReplyDuty(
 
   const maxPerRun = config.maxMentionRepliesPerRun || 2
 
-  // 取得巡查帳本中最近記錄的貼文清單來掃描評論區
-  const ledgerState = (ledger as any).state || {}
-  const candidatePostPks = Object.keys(ledgerState.seenPosts || {}).slice(-15).reverse()
+  // 取得候選貼文與 Reel PK 清單來掃描評論區
+  const candidatePostPks: string[] = []
+  const addCandidatePk = (pkRaw: any) => {
+    const pkStr = String(pkRaw || '').split('_')[0].trim()
+    if (pkStr && /^\d+$/.test(pkStr) && !candidatePostPks.includes(pkStr)) {
+      candidatePostPks.push(pkStr)
+    }
+  }
 
-  log(`[MentionReply] 開始檢查近期 ${candidatePostPks.length} 則貼文評論區中 @${botName} 的提問 (本輪上限: ${maxPerRun} 則)...`)
+  // 0. 優先從 Instagram 通知收件匣 (news/inbox) 取得近期提及 (@mention) 或回覆機器人的貼文/Reel PK
+  if (typeof (mcp as any).igGetRecentMentions === 'function') {
+    try {
+      const inboxMentions = await (mcp as any).igGetRecentMentions(15)
+      if (inboxMentions?.ok && Array.isArray(inboxMentions.media_pks)) {
+        for (const mpk of inboxMentions.media_pks) {
+          addCandidatePk(mpk)
+        }
+      }
+    } catch (e: any) {
+      log(`[MentionReply] 讀取通知收件匣提及紀錄提示: ${e.message}`)
+    }
+  }
+
+  // 1. 抓取目標關聯用戶 (主人帳號 Master Username) 的最新貼文與 Reels
+  const targetUser = (svc?.config?.masterUsername || config.targetMentionUser || '').replace(/^@/, '').trim()
+  if (targetUser) {
+    try {
+      const targetRes = await mcp.igGetUserMedias(targetUser, 5)
+      if (targetRes?.ok && Array.isArray(targetRes.posts)) {
+        for (const p of targetRes.posts) {
+          addCandidatePk(p.pk || p.id)
+        }
+      }
+    } catch (e: any) {
+      log(`[MentionReply] 抓取目標用戶 @${targetUser} 貼文失敗: ${e.message}`)
+    }
+    try {
+      const targetClips = await mcp.igGetUserClips(targetUser, 5)
+      if (targetClips?.ok && Array.isArray(targetClips.reels)) {
+        for (const r of targetClips.reels) {
+          addCandidatePk(r.pk || r.id)
+        }
+      }
+    } catch {}
+  }
+
+  // 2. 抓取機器人自身 (@botUsername) 的最新貼文與 Reels
+  if (botName && botName !== targetUser.toLowerCase()) {
+    try {
+      const botRes = await mcp.igGetUserMedias(botName, 5)
+      if (botRes?.ok && Array.isArray(botRes.posts)) {
+        for (const p of botRes.posts) {
+          addCandidatePk(p.pk || p.id)
+        }
+      }
+    } catch (e: any) {
+      log(`[MentionReply] 抓取機器人 @${botName} 自身貼文失敗: ${e.message}`)
+    }
+  }
+
+  // 3. 結合本插件巡查帳本 (ledger.json) 中最近記錄與推坑過的貼文/Reel
+  const ledgerState = (ledger as any).state || {}
+  const pushedPosts = ledgerState.dailyStats?.pushedPosts || []
+  for (const item of pushedPosts.slice(-10).reverse()) {
+    addCandidatePk(item?.pk)
+  }
+  const seenPks = Object.keys(ledgerState.seenPosts || {}).slice(-12).reverse()
+  for (const pk of seenPks) {
+    addCandidatePk(pk)
+  }
+
+  // 4. 結合姊妹外掛 dsh-instagram-scroll 的滾動帳本 (scroll_ledger.json)，涵蓋機器人刷貼文/Reels 留評過的項目
+  try {
+    const pluginRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
+    const scrollLedgerPath = join(dirname(pluginRoot), 'dsh-instagram-scroll', 'data', 'scroll_ledger.json')
+    if (existsSync(scrollLedgerPath)) {
+      const scrollData = JSON.parse(readFileSync(scrollLedgerPath, 'utf-8'))
+      const recItems = scrollData?.dailyStats?.recommendedItems || []
+      for (const rec of recItems.slice(-10).reverse()) {
+        addCandidatePk(rec?.pk)
+      }
+      const scrollSeen = Object.keys(scrollData?.seenPosts || {}).slice(-10).reverse()
+      for (const spk of scrollSeen) {
+        addCandidatePk(spk)
+      }
+    }
+  } catch {}
+
+  log(`[MentionReply] 開始檢查近期 ${candidatePostPks.length} 則貼文/Reel 評論區中 @${botName} 的提問 (本輪上限: ${maxPerRun} 則)...`)
 
   for (const postPk of candidatePostPks) {
-    if (replied >= maxPerRun || !ledger.canDoDaily('mentionReplies', config.maxDailyMentionReplies) || !ledger.canDoHourly('mentionReplies', config.maxHourlyMentionReplies || 5)) {
+    if (
+      replied >= maxPerRun ||
+      !ledger.canDoDaily('mentionReplies', config.maxDailyMentionReplies) ||
+      !ledger.canDoHourly('mentionReplies', config.maxHourlyMentionReplies || 5)
+    ) {
       break
     }
 
@@ -154,10 +184,13 @@ export async function executeMentionReplyDuty(
     }
 
     try {
-      const contextRes = await mcp.igGetPostContext(postPk, config.maxContextComments || 10)
-      if (!contextRes?.ok) continue
+      const contextRes = await mcp.igGetPostContext(postPk, Math.max(config.maxContextComments || 15, 15))
+      if (!contextRes?.ok || !contextRes.media) {
+        log(`[MentionReply] ⚠️ 無法讀取貼文/Reel (${postPk}) 的內容上下文，跳過以防瞎回答`)
+        continue
+      }
 
-      const media: any = contextRes.media || {}
+      const media: any = contextRes.media
       const comments: any[] = contextRes.comments || []
 
       for (const c of comments) {
@@ -186,7 +219,7 @@ export async function executeMentionReplyDuty(
           continue
         }
 
-        log(`[MentionReply] 偵測到來自 @${commentUser} 的提問: "${commentText}" (PK: ${commentPk})`)
+        log(`[MentionReply] 偵測到來自 @${commentUser} 在 ${media.type_label || '貼文'} (${media.code || postPk}) 的提及留言: "${commentText}" (PK: ${commentPk})`)
 
         // 3. 黑名單與白名單過濾
         if (config.blacklistUsers && config.blacklistUsers.includes(commentUser)) {
@@ -208,23 +241,81 @@ export async function executeMentionReplyDuty(
           break
         }
 
-        // 5. 組裝完整上下文 Prompt
+        // 5. 收集該則貼文或 Reel 的完整真實內容（內文、標題、無障礙視覺描述、配樂/原聲、字幕、視覺圖片與相鄰留言）
+        const mediaCaption = String(media.caption || '').trim()
+        const mediaTitle = String(media.title || '').trim()
+        const mediaA11y = String(media.accessibility_caption || '').trim()
+        const mediaAudio = String(media.audio_info || '').trim()
+        const mediaSubtitles = String(media.video_subtitles || '').trim()
+        const mediaLocation = String(media.location_name || '').trim()
+        const mediaTypeLabel = String(media.type_label || (media.is_reel ? 'Reel 連續短片' : '貼文'))
+        const imageUrls: string[] = Array.isArray(media.image_urls) && media.image_urls.length > 0
+          ? media.image_urls
+          : media.thumbnail_url
+          ? [String(media.thumbnail_url)]
+          : []
+
+        // 防瞎答保護：確認至少讀取到內文、標題、字幕、視覺描述、視覺封面或留言上下文之一
+        if (!mediaCaption && !mediaTitle && !mediaA11y && !mediaSubtitles && imageUrls.length === 0) {
+          log(`[MentionReply] ⚠️ 貼文/Reel (${postPk}) 無任何可讀取之內文、字幕或視覺畫面，跳過回覆以免瞎回答`)
+          continue
+        }
+
         const neighborComments = comments
           .filter((item) => String(item.pk) !== commentPk)
-          .slice(-5)
+          .slice(-8)
           .map((item) => `@${item.user?.username}: ${item.text}`)
           .join('\n')
 
-        const postContextText = `貼文作者：@${media.user?.username || '未知'}
-貼文短碼：${media.code}
-貼文內文：
-${media.caption || '(無內文)'}
+        const parentContextLine = c.parent_comment_text
+          ? `\n【所回覆的上層留言】：@${c.parent_comment_user || '用戶'} 說：「${c.parent_comment_text}」`
+          : ''
 
-近期鄰近留言：
-${neighborComments || '(無相鄰留言)'}`
+        const detailLines: string[] = [
+          `媒體類型：${mediaTypeLabel}`,
+          `發布作者：@${media.user?.username || '未知'}${media.user?.full_name ? ` (${media.user.full_name})` : ''}`,
+          `短碼連結：${media.url || `https://www.instagram.com/p/${media.code}/`}`,
+        ]
+        if (mediaTitle) detailLines.push(`標題：${mediaTitle}`)
+        if (mediaLocation) detailLines.push(`地點標記：${mediaLocation}`)
+        if (mediaAudio) detailLines.push(`Reel 音訊/配樂：${mediaAudio}`)
+        detailLines.push(`貼文/Reel 完整內文 (Caption)：\n${mediaCaption || '(作者未填寫文字內文)'}`)
+        if (mediaSubtitles) detailLines.push(`影片語音字幕 (Subtitles)：\n${mediaSubtitles}`)
+        if (mediaA11y) detailLines.push(`畫面視覺描述 (Accessibility Caption)：\n${mediaA11y}`)
+        detailLines.push(`\n留言區相鄰討論脈絡：\n${neighborComments || '(無其他相鄰留言)'}`)
 
-        const systemPrompt = config.mentionPersonaPrompt || '你是一個溫和聰慧的 AI 助理。'
-        const generatedAnswer = await callLlmForReply(ctx, systemPrompt, postContextText, commentUser, commentText)
+        const postContextText = detailLines.join('\n')
+
+        const basePersona = config.mentionPersonaPrompt || '你是一個溫和聰慧、理解力強的 AI 助理。'
+        const systemPrompt = `${basePersona}
+【核心鐵則（嚴禁瞎回答）】：
+1. 你必須仔細閱讀下方提供的【被 @ 的貼文 / Reel 真實內容】（包含內文 Caption、影片字幕、畫面視覺描述、配樂資訊、附帶的視覺畫面以及留言區上下文）。
+2. 你的回覆必須 100% 緊扣這則貼文或 Reel 的實際內容與對方的提問來回答，絕對不可以脫離貼文內容憑空捏造、瞎猜或給出與該貼文無關的籠統廢話。
+3. 若該貼文是 Reel 短片且文字較少，請結合畫面視覺影像、標題、配樂與其他網友留言脈絡來理解主題；若對方詢問的細節在貼文與畫面中確實未提及，請誠實就貼文目前呈現的內容作答，切勿胡亂編造事實。`
+
+        const userPrompt = `【被 @ 的貼文 / Reel 真實內容】：
+${postContextText}${parentContextLine}
+
+【在留言區 @ 提及你的用戶】：@${commentUser}
+【對方的具體留言 / 提問內容】：${commentText}
+
+請嚴格根據上方這則 ${mediaTypeLabel} 的真實內容與脈絡，針對 @${commentUser} 的留言生成具體、準確且自然的回覆（控制在 100 字以內，不要包含引號或額外前綴解釋；若依人設判斷為惡意垃圾留言不想回應，請只輸出 [NO_REPLY]）：`
+
+        let generatedAnswer = ''
+        try {
+          generatedAnswer = await callLlmForInstagram(ctx, config, systemPrompt, userPrompt, log, imageUrls)
+        } catch (llmErr: any) {
+          log(`[MentionReply] ❌ AI 模型生成提及回覆失敗，跳過發送 (不使用罐頭訊息): ${llmErr.message}`)
+          notes.push(`AI 生成失敗 (@${commentUser}): ${llmErr.message}`)
+          continue
+        }
+
+        const trimmedAnswer = (generatedAnswer || '').trim()
+        if (!trimmedAnswer || trimmedAnswer === '[NO_REPLY]' || trimmedAnswer.startsWith('[系統提示]')) {
+          log(`[MentionReply] AI 判定不回覆或回傳系統提示 (${trimmedAnswer.slice(0, 30)})，標記已讀並跳過`)
+          ledger.markSeenComment(commentPk, { postPk, user: commentUser })
+          continue
+        }
 
         // 6. 防風控間隔等待
         if (replied > 0) {
@@ -234,8 +325,8 @@ ${neighborComments || '(無相鄰留言)'}`
         }
 
         // 7. 發布巢狀子留言回覆 (Reply)
-        const replyText = `@${commentUser} ${generatedAnswer}`.trim()
-        log(`[MentionReply] 正在以巢狀留言回覆 @${commentUser}: ${replyText.slice(0, 50)}...`)
+        const replyText = trimmedAnswer.startsWith(`@${commentUser}`) ? trimmedAnswer : `@${commentUser} ${trimmedAnswer}`
+        log(`[MentionReply] 正在以巢狀留言發送 AI 回覆給 @${commentUser}: ${replyText.slice(0, 60)}...`)
 
         const postResult = await mcp.igPostComment({
           media_pk: postPk,
@@ -245,7 +336,10 @@ ${neighborComments || '(無相鄰留言)'}`
           jitter_max: config.jitterMaxSeconds,
         })
 
-        if (postResult?.in_cooldown || (postResult?.error && /action block|feedback|checkpoint|please wait|rate limit/i.test(postResult.error))) {
+        if (
+          postResult?.in_cooldown ||
+          (postResult?.error && /action block|feedback|checkpoint|please wait|rate limit/i.test(postResult.error))
+        ) {
           ledger.triggerCooldown(config.cooldownMinutesOnBlock || 30, postResult.error || 'Instagram 頻率風控阻擋')
           log(`[MentionReply] 🚨 偵測到風控或熔斷保護，停止後續回覆動作！`)
           notes.push(`觸發防風控熔斷: ${postResult.error}`)
@@ -257,7 +351,7 @@ ${neighborComments || '(無相鄰留言)'}`
           ledger.markSeenComment(commentPk, { postPk, user: commentUser })
           ledger.incrementPostReplyRound(postPk)
           ledger.recordAction('mentionReplies')
-          log(`[MentionReply] 成功回覆留言 (Post PK: ${postPk}, Comment PK: ${commentPk})`)
+          log(`[MentionReply] ✅ AI 成功根據 ${mediaTypeLabel} 內容回覆留言 (Post PK: ${postPk}, Comment PK: ${commentPk})`)
         } else {
           log(`[MentionReply] 回覆留言失敗: ${postResult?.error || JSON.stringify(postResult)}`)
         }
@@ -271,6 +365,6 @@ ${neighborComments || '(無相鄰留言)'}`
     }
   }
 
-  notes.push(`本輪提問監聽結束：掃描留言 ${scanned} 則，完成回覆 ${replied} 則`)
+  notes.push(`本輪提問監聽結束：掃描留言 ${scanned} 則，完成 AI 回覆 ${replied} 則`)
   return { ok: true, scannedComments: scanned, repliedCount: replied, notes }
 }

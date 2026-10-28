@@ -26,6 +26,9 @@ export interface InstagramPluginConfig {
   // === 2. 背景巡查與推薦詳細條件 (Patrol Duty) ===
   patrolEnabled: boolean
   patrolIntervalMinutes: number
+  fuzzySearchEnabled: boolean
+  fuzzyKeywords: string[]
+  tagSearchEnabled: boolean
   hashtags: string[]
   patrolSearchLimit: number
   minLikes: number
@@ -66,24 +69,61 @@ export interface InstagramPluginConfig {
   maxHourlyDmReplies: number
   maxDmRepliesPerRun: number
   cooldownMinutesOnBlock: number
+
+  // === 6. LLM 模型與外部訂閱額度 (參照 dsh-discord-plugin) ===
+  llmMode: 'auto' | 'subscriptions' | 'custom'
+  subscriptionProvider: string
+  subscriptionModel: string
+  customLlmApiKey: string
+  customLlmApiBase: string
+  customLlmModel: string
 }
+
+export const DEFAULT_EXCLUDE_KEYWORDS = [
+  '廣告',
+  '互粉',
+  '代購',
+  '抽獎',
+  '博彩',
+  '色情',
+  '兼職',
+  'AI生成',
+  'AI影片',
+  'AI動畫',
+  'AI繪圖',
+  'AI文章',
+  'AIGC',
+  'Midjourney',
+  'Stable Diffusion',
+  'Sora',
+  'Runway',
+  'Kling',
+  '可靈',
+  '即夢',
+  'AI配音',
+  'AI美女',
+]
 
 export const defaultConfig: InstagramPluginConfig = {
   // 1. 身份與目標
   botUsername: '',
   targetMentionUser: '',
 
-  // 2. 背景巡查與推薦
+  // 2. 背景巡查與推薦 (預設不搜泛用 'ai' 以免搜出大量 AI 生成影片/動畫/農場文)
   patrolEnabled: true,
   patrolIntervalMinutes: 15,
-  hashtags: ['ai', 'deepseek', 'coding', 'tech'],
+  fuzzySearchEnabled: true,
+  fuzzyKeywords: ['deepseek', 'coding', 'tech', 'github'],
+  tagSearchEnabled: false,
+  hashtags: ['deepseek', 'coding', 'tech', 'github'],
   patrolSearchLimit: 10,
   minLikes: 20,
   minComments: 2,
-  excludeKeywords: ['廣告', '互粉', '代購', '抽獎', '博彩', '色情', '兼職'],
+  excludeKeywords: DEFAULT_EXCLUDE_KEYWORDS,
   requireKeywords: [],
   maxDailyPatrolComments: 10,
-  patrolPersonaPrompt: '你是一個熱情、專業且具備敏銳眼光的科技社群助手。評估這則貼文是否具有實質技術或應用價值，若值得推薦，請用簡短吸引人的語氣向目標用戶推薦推坑。',
+  patrolPersonaPrompt:
+    '你是一個熱情、專業且具備敏銳眼光的科技社群助手。評估這則貼文是否具有實質技術、真實創作或應用價值（嚴格排除 AI 生成的影片、AI 動畫、AI 繪圖與 AI 生成文章），若值得推薦，請用簡短吸引人的語氣向目標用戶推薦推坑。',
   recommendTemplate: '@{targetUser} 這篇關於 #{hashtag} 的內容很值得一看：{summary}',
 
   // 3. 被 @ 提問應答
@@ -94,7 +134,8 @@ export const defaultConfig: InstagramPluginConfig = {
   maxDailyMentionReplies: 20,
   whitelistUsers: [],
   blacklistUsers: [],
-  mentionPersonaPrompt: '你是一個聰慧、客氣且具備深度技術理解的 AI 助理。請結合貼文的完整上下文（發布者、內文、相鄰留言）認真回答用戶的提問，語氣自然友善，回答精簡聚焦。',
+  mentionPersonaPrompt:
+    '你是一個聰慧、客氣且具備深度技術理解的 AI 助理。請結合貼文的完整上下文（發布者、內文、相鄰留言）認真回答用戶的提問，語氣自然友善，回答精簡聚焦。',
 
   // 4. 私訊雙向應答
   dmReplyEnabled: true,
@@ -103,7 +144,8 @@ export const defaultConfig: InstagramPluginConfig = {
   dmWhitelist: [],
   dmMaxPerUserPerDay: 5,
   dmDailyCap: 30,
-  dmPersonaPrompt: '你是一個禮貌、溫暖的社群助理。這是一則私訊互動，請用簡潔自然的口吻給予用戶解答或致謝。',
+  dmPersonaPrompt:
+    '你是一個禮貌、溫暖的社群助理。這是一則私訊互動，請用簡潔自然的口吻給予用戶解答或致謝。',
 
   // 5. 安全防風控 (保守安全設定，保護帳號避免停權)
   jitterMinSeconds: 6,
@@ -116,6 +158,14 @@ export const defaultConfig: InstagramPluginConfig = {
   maxHourlyDmReplies: 8,
   maxDmRepliesPerRun: 3,
   cooldownMinutesOnBlock: 30,
+
+  // 6. LLM 模型與外部插件訂閱額度
+  llmMode: 'auto',
+  subscriptionProvider: 'antigravity',
+  subscriptionModel: 'gemini-2.5-flash',
+  customLlmApiKey: '',
+  customLlmApiBase: 'https://api.deepseek.com',
+  customLlmModel: 'deepseek-chat',
 }
 
 /**
@@ -126,7 +176,7 @@ export function unwrapValue<T>(val: any, fallback: T): T {
   if (val === '[object Object]') return fallback
   if (typeof val === 'object' && typeof val.get === 'function') {
     const v = val.get()
-    return (v !== undefined && v !== null && typeof v !== 'object') ? v : fallback
+    return v !== undefined && v !== null && typeof v !== 'object' ? v : fallback
   }
   if (typeof val === 'object' && !Array.isArray(val)) {
     return fallback
@@ -137,12 +187,25 @@ export function unwrapValue<T>(val: any, fallback: T): T {
 export function sanitizeConfig(raw: any): InstagramPluginConfig {
   const c = raw || {}
   const botUser = unwrapValue(c.botUsername, unwrapValue(c.username, defaultConfig.botUsername))
+  const rawMode = String(unwrapValue(c.llmMode, defaultConfig.llmMode) || 'auto').trim()
+  const llmMode = (['auto', 'subscriptions', 'custom'].includes(rawMode) ? rawMode : 'auto') as
+    | 'auto'
+    | 'subscriptions'
+    | 'custom'
+
   return {
     botUsername: botUser,
     targetMentionUser: unwrapValue(c.targetMentionUser, defaultConfig.targetMentionUser),
 
     patrolEnabled: unwrapValue(c.patrolEnabled, defaultConfig.patrolEnabled),
     patrolIntervalMinutes: unwrapValue(c.patrolIntervalMinutes, defaultConfig.patrolIntervalMinutes),
+    fuzzySearchEnabled: unwrapValue(c.fuzzySearchEnabled, defaultConfig.fuzzySearchEnabled),
+    fuzzyKeywords: Array.isArray(c.fuzzyKeywords)
+      ? c.fuzzyKeywords
+      : Array.isArray(c.hashtags)
+      ? c.hashtags
+      : defaultConfig.fuzzyKeywords,
+    tagSearchEnabled: unwrapValue(c.tagSearchEnabled, defaultConfig.tagSearchEnabled),
     hashtags: Array.isArray(c.hashtags) ? c.hashtags : defaultConfig.hashtags,
     patrolSearchLimit: unwrapValue(c.patrolSearchLimit, defaultConfig.patrolSearchLimit),
     minLikes: unwrapValue(c.minLikes, defaultConfig.minLikes),
@@ -180,6 +243,13 @@ export function sanitizeConfig(raw: any): InstagramPluginConfig {
     maxHourlyDmReplies: unwrapValue(c.maxHourlyDmReplies, defaultConfig.maxHourlyDmReplies),
     maxDmRepliesPerRun: unwrapValue(c.maxDmRepliesPerRun, defaultConfig.maxDmRepliesPerRun),
     cooldownMinutesOnBlock: unwrapValue(c.cooldownMinutesOnBlock, defaultConfig.cooldownMinutesOnBlock),
+
+    llmMode,
+    subscriptionProvider: String(unwrapValue(c.subscriptionProvider, defaultConfig.subscriptionProvider) || 'antigravity').trim(),
+    subscriptionModel: String(unwrapValue(c.subscriptionModel, defaultConfig.subscriptionModel) || 'gemini-2.5-flash').trim(),
+    customLlmApiKey: String(unwrapValue(c.customLlmApiKey, defaultConfig.customLlmApiKey) || '').trim(),
+    customLlmApiBase: String(unwrapValue(c.customLlmApiBase, defaultConfig.customLlmApiBase) || 'https://api.deepseek.com').trim(),
+    customLlmModel: String(unwrapValue(c.customLlmModel, defaultConfig.customLlmModel) || 'deepseek-chat').trim(),
   }
 }
 
@@ -197,13 +267,16 @@ export function buildConfigSchema(z: any) {
     targetMentionUser: z.string().default('').description('推坑目標用戶帳號（巡查發現優質貼文時 @目標用戶）').extra('volatile', true),
 
     // === 背景巡查與推薦 ===
-    patrolEnabled: z.boolean().default(true).description('是否開啟標籤背景巡查與推坑').extra('volatile', true),
-    patrolIntervalMinutes: z.natural().default(15).description('標籤巡查週期（分鐘，預設 15）').extra('volatile', true),
-    hashtags: z.array(z.string()).default(['ai', 'deepseek', 'coding', 'tech']).description('監聽的 Hashtags 標籤列表').extra('volatile', true),
-    patrolSearchLimit: z.natural().default(10).description('每次搜尋各標籤抓取貼文的最大數量').extra('volatile', true),
+    patrolEnabled: z.boolean().default(true).description('是否開啟背景巡查與推坑').extra('volatile', true),
+    patrolIntervalMinutes: z.natural().default(15).description('巡查週期（分鐘，預設 15）').extra('volatile', true),
+    fuzzySearchEnabled: z.boolean().default(true).description('是否啟用模糊搜尋抓取貼文（推薦開啟，解決 Tags 抓到 0 則貼文問題）').extra('volatile', true),
+    fuzzyKeywords: z.array(z.string()).default(['deepseek', 'coding', 'tech', 'github']).description('模糊搜尋關鍵字列表').extra('volatile', true),
+    tagSearchEnabled: z.boolean().default(false).description('是否啟用 Tags 標籤搜尋（預設關閉，保留可手動切換開關）').extra('volatile', true),
+    hashtags: z.array(z.string()).default(['deepseek', 'coding', 'tech', 'github']).description('監聽的 Hashtags 標籤列表（當開啟 Tags 搜尋時使用）').extra('volatile', true),
+    patrolSearchLimit: z.natural().default(10).description('每次搜尋各關鍵字/標籤抓取貼文的最大數量').extra('volatile', true),
     minLikes: z.natural().default(20).description('貼文門檻：最低按讚數（低於此值自動跳過）').extra('volatile', true),
     minComments: z.natural().default(2).description('貼文門檻：最低留言數').extra('volatile', true),
-    excludeKeywords: z.array(z.string()).default(['廣告', '互粉', '代購', '抽獎', '博彩', '兼職']).description('排除關鍵字（命中即過濾垃圾宣傳）').extra('volatile', true),
+    excludeKeywords: z.array(z.string()).default(DEFAULT_EXCLUDE_KEYWORDS).description('排除關鍵字（命中即過濾垃圾宣傳與 AI 生成影片/動畫/文章）').extra('volatile', true),
     requireKeywords: z.array(z.string()).default([]).description('必要關鍵字（非空時內文需命中至少一項）').extra('volatile', true),
     maxDailyPatrolComments: z.natural().default(10).description('每日巡查推坑留言上限（安全頻次保護）').extra('volatile', true),
     patrolPersonaPrompt: z.string().role('textarea').default(defaultConfig.patrolPersonaPrompt).description('巡查推坑口吻與評估準則 Prompt').extra('volatile', true),
@@ -228,16 +301,32 @@ export function buildConfigSchema(z: any) {
     dmDailyCap: z.natural().default(30).description('全域每日私訊回覆總上限').extra('volatile', true),
     dmPersonaPrompt: z.string().role('textarea').default(defaultConfig.dmPersonaPrompt).description('私訊專用回覆口吻 Prompt').extra('volatile', true),
 
-    // === 5. 安全防風控（重要：保護帳號避免被 Instagram 偵測為機器人或封禁） ===
+    // === 5. 安全防風控 ===
     jitterMinSeconds: z.number().default(6).description('動作前隨機抖動最小等待秒數 (建議 6 秒以上)').extra('volatile', true),
     jitterMaxSeconds: z.number().default(15).description('動作前隨機抖動最大等待秒數 (建議 15 秒以上)').extra('volatile', true),
     maxHourlyPatrolComments: z.natural().default(3).description('每小時巡查推坑留言上限 (防風控頻次保護)').extra('volatile', true),
     maxPatrolCommentsPerRun: z.natural().default(1).description('單次巡查任務最多發布的推坑留言則數 (避免短時間連發)').extra('volatile', true),
     minCommentIntervalSeconds: z.natural().default(30).description('同輪若有多筆留言時的最小強制間隔秒數').extra('volatile', true),
-    maxHourlyMentionReplies: z.natural().default(5).description('每小時被 @ 提問回覆上限').extra('volatile', true),
-    maxMentionRepliesPerRun: z.natural().default(2).description('單次被 @ 提問檢查最多回覆留言則數').extra('volatile', true),
-    maxHourlyDmReplies: z.natural().default(8).description('每小時私訊自動回覆上限').extra('volatile', true),
-    maxDmRepliesPerRun: z.natural().default(3).description('單次私訊檢查最多回覆線程數').extra('volatile', true),
-    cooldownMinutesOnBlock: z.natural().default(30).description('遇官方 Action Block / 頻率限制時自動熔斷暫停分鐘數').extra('volatile', true),
+    maxHourlyMentionReplies: z.natural().default(5).description('每小時被 @ 回覆上限').extra('volatile', true),
+    maxMentionRepliesPerRun: z.natural().default(2).description('單次檢查最多回覆的被 @ 留言則數').extra('volatile', true),
+    maxHourlyDmReplies: z.natural().default(8).description('每小時私訊回覆上限').extra('volatile', true),
+    maxDmRepliesPerRun: z.natural().default(3).description('單次檢查最多回覆的未讀私訊則數').extra('volatile', true),
+    cooldownMinutesOnBlock: z.natural().default(30).description('遇到 Instagram 頻率限制或 Action Block 時強制冷卻暫停分鐘數').extra('volatile', true),
+
+    // === 6. LLM 模型與外部插件訂閱額度 ===
+    llmMode: z
+      .union([
+        z.const('auto').description('自動偵測 (優先自訂金鑰，未填時使用外部插件訂閱額度)'),
+        z.const('subscriptions').description('DSH 平台訂閱額度 (Subscriptions - 免費免 Key)'),
+        z.const('custom').description('自訂 API 金鑰 (Custom API)'),
+      ])
+      .default('auto')
+      .description('LLM 推理來源模式')
+      .extra('volatile', true),
+    subscriptionProvider: z.string().default('antigravity').description('訂閱平台服務商 (如 antigravity, codex, grok)').extra('volatile', true),
+    subscriptionModel: z.string().default('gemini-2.5-flash').description('訂閱平台模型名稱').extra('volatile', true),
+    customLlmApiKey: z.string().role('secret').default('').description('自訂 LLM API Key (選填，未填時使用訂閱額度或宿主 LLM)').extra('volatile', true),
+    customLlmApiBase: z.string().default('https://api.deepseek.com').description('自訂 LLM Base URL').extra('volatile', true),
+    customLlmModel: z.string().default('deepseek-chat').description('自訂 LLM 模型名稱').extra('volatile', true),
   })
 }

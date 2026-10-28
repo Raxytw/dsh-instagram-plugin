@@ -14,6 +14,13 @@
 import { InstagramPluginConfig } from '../config.js'
 import { LedgerManager } from '../lib/ledger.js'
 import { callLlmForInstagram, isAiGeneratedContent } from '../lib/llm.js'
+import {
+  ANTI_AI_FLAVOR_PRIMARY_RULE,
+  PROMPT_INJECTION_DEFENSE_RULE,
+  buildFeiyuMoodPromptBlock,
+  stripAiFlavorArtifacts,
+  wrapUntrustedContent,
+} from '../lib/companion.js'
 import type { InstagramMcpClient } from '@luoyi-dsh/instagram-mcp'
 
 export interface PatrolDutyResult {
@@ -198,21 +205,30 @@ export async function executePatrolDuty(
           }
         }
 
-        // 6. 調用 AI 評估貼文價值
-        const systemPrompt = config.patrolPersonaPrompt || '你是一個專業社群助理。'
+        // 6. 調用 AI 評估貼文價值（第一條件：去 AI 味 + 同步 dsh-feiyu-mood 心情指標 + 防注入邊界）
+        const moodBlock = buildFeiyuMoodPromptBlock(true)
+        const basePersona = config.patrolPersonaPrompt || '你是一個眼光敏銳、說話自然隨性的朋友。'
+        const systemPrompt = `${ANTI_AI_FLAVOR_PRIMARY_RULE}
+
+${PROMPT_INJECTION_DEFENSE_RULE}
+
+【角色人設】：
+${basePersona}
+${moodBlock ? `\n${moodBlock}` : ''}`
         const evalPrompt = `請評估以下 Instagram 貼文是否具備分享與推薦價值：
 搜尋主題：${tag}
 作者：@${authorName || 'unknown'}
 按讚數：${likes} | 留言數：${comments}
 內文摘要：
-${caption.slice(0, 600)}
+${wrapUntrustedContent('post_caption', caption.slice(0, 600))}
 
 【重要排除原則】：
 - 嚴格禁止推薦任何「AI 生成的影片、AI 動畫、AI 繪圖/算圖、AI 配音或 AI 生成的農場文章」（例如 Sora、Runway、Midjourney、Stable Diffusion、Kling、可靈、AIGC 等）。若懷疑或發現為 AI 生成的創作/影片/動畫/文章，請務必回答 "recommend": false！
 - 只推薦真實人類創作的作品、真實軟體開發/技術實踐、優質工具或有深度的原創見解。
+- 推薦語句 (reason) 必須遵守【第一條件：絕對不要 AI 味】，像真人朋友在 IG 隨手標記分享好東西一樣自然（例如「這篇講得蠻透的」、「這個實作思路很有意思」），嚴禁寫得像廣告文案或客服摘要！
 
 請嚴格以 JSON 格式回答：
-{"recommend": true 或 false, "reason": "50字內依你的人設口吻寫出的一句話推坑留言（不要加 @用戶名）"}`
+{"recommend": true 或 false, "reason": "35字內無 AI 味的自然口語推坑留言（不要加 @用戶名）"}`
 
         let llmReply = ''
         try {
@@ -230,7 +246,7 @@ ${caption.slice(0, 600)}
           if (jsonMatch) {
             const parsed = JSON.parse(jsonMatch[0])
             isRecommend = Boolean(parsed.recommend)
-            if (parsed.reason) reason = String(parsed.reason).trim()
+            if (parsed.reason) reason = stripAiFlavorArtifacts(String(parsed.reason).trim())
           } else {
             const scoreMatch = llmReply.match(/([89]\d|100)\s*分/)
             if (scoreMatch) {

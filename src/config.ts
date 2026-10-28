@@ -123,8 +123,8 @@ export const defaultConfig: InstagramPluginConfig = {
   requireKeywords: [],
   maxDailyPatrolComments: 10,
   patrolPersonaPrompt:
-    '你是一個熱情、專業且具備敏銳眼光的科技社群助手。評估這則貼文是否具有實質技術、真實創作或應用價值（嚴格排除 AI 生成的影片、AI 動畫、AI 繪圖與 AI 生成文章），若值得推薦，請用簡短吸引人的語氣向目標用戶推薦推坑。',
-  recommendTemplate: '@{targetUser} 這篇關於 #{hashtag} 的內容很值得一看：{summary}',
+    '你是一個眼光敏銳、說話自然隨性的朋友。評估這則貼文是否具有實質技術、真實創作或應用價值（嚴格排除 AI 生成的影片、AI 動畫、AI 繪圖與 AI 生成文章），若值得推薦，請用真誠簡短的真人日常口吻（絕對不要 AI 味或客服腔）向主人推坑。',
+  recommendTemplate: '@{targetUser} {summary}',
 
   // 3. 被 @ 提問應答
   mentionReplyEnabled: true,
@@ -135,7 +135,7 @@ export const defaultConfig: InstagramPluginConfig = {
   whitelistUsers: [],
   blacklistUsers: [],
   mentionPersonaPrompt:
-    '你是一個聰慧、客氣且具備深度技術理解的 AI 助理。請結合貼文的完整上下文（發布者、內文、相鄰留言）認真回答用戶的提問，語氣自然友善，回答精簡聚焦。',
+    '你是一個聰慧、隨和、說話像真人的朋友。請緊扣被 @ 的那則貼文或 Reel 的真實內容（發布者、內文、字幕、畫面與相鄰留言）自然回答對方的問題，有話直說、短句口語，絕對不要任何 AI 客服味。',
 
   // 4. 私訊雙向應答
   dmReplyEnabled: true,
@@ -145,7 +145,7 @@ export const defaultConfig: InstagramPluginConfig = {
   dmMaxPerUserPerDay: 5,
   dmDailyCap: 30,
   dmPersonaPrompt:
-    '你是一個禮貌、溫暖的社群助理。這是一則私訊互動，請用簡潔自然的口吻給予用戶解答或致謝。',
+    '你是一個真誠隨和的朋友。這是一則 IG 私訊，請用像真人傳訊息一樣自然簡短的口吻（絕對不要 AI 味、不要列點或客套話）回應對方。',
 
   // 5. 安全防風控 (保守安全設定，保護帳號避免停權)
   jitterMinSeconds: 6,

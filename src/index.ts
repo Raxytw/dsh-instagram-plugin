@@ -23,6 +23,7 @@ import { executePatrolDuty } from './duty/patrol.js'
 import { executeMentionReplyDuty } from './duty/mentionReply.js'
 import { executeDmReplyDuty } from './duty/dmReply.js'
 import { getAuthorizedSubscriptionProviders, testLlmConnection } from './lib/llm.js'
+import { getSocialFishMemoryStats } from './lib/companion.js'
 import {
   type InstagramMcpClient,
   getSharedMcpClient,
@@ -273,6 +274,11 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
           botUsername: activeBotUser,
           masterUsername: activeMasterUser,
           dailyStats: ledger.getDailyStats(),
+          feiyuMood: getSocialFishMemoryStats('social_ig_').moodSnapshot,
+          fishMemory: {
+            isolated: true,
+            storeFilePrefix: '~/.dsh/fish-memory/social_ig_*.json',
+          },
         })
       }
 

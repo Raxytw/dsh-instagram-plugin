@@ -15,6 +15,18 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import type { InstagramPluginConfig } from '../config.js'
+import {
+  ANTI_AI_FLAVOR_PRIMARY_RULE,
+  PROMPT_INJECTION_DEFENSE_RULE,
+  buildFeiyuMoodPromptBlock,
+  getSocialFishMemoryStats,
+  inspectAndSanitizeUntrustedInput,
+  readFeiyuMoodSnapshot,
+  recallSocialMemories,
+  recordSocialInteractionMemory,
+  stripAiFlavorArtifacts,
+  wrapUntrustedContent,
+} from './companion.js'
 
 export interface SubscriptionProviderInfo {
   provider: string
@@ -762,5 +774,15 @@ export async function callLlmForInstagram(
   testLlmConnection,
   isAiGeneratedContent,
   AIGC_FILTER_KEYWORDS,
+  ANTI_AI_FLAVOR_PRIMARY_RULE,
+  PROMPT_INJECTION_DEFENSE_RULE,
+  readFeiyuMoodSnapshot,
+  buildFeiyuMoodPromptBlock,
+  recallSocialMemories,
+  recordSocialInteractionMemory,
+  stripAiFlavorArtifacts,
+  inspectAndSanitizeUntrustedInput,
+  wrapUntrustedContent,
+  getSocialFishMemoryStats,
 }
 

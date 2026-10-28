@@ -16,6 +16,16 @@
    - 完整讀取該則貼文或 Reel 的 `caption`（內文）、`title`（標題）、`accessibility_caption`（無障礙視覺描述）、`audio_info`（配樂/原聲）、`video_subtitles`（影片語音字幕）、`image_urls`（透過多模態視覺模型直接看圖）與父留言上下文，100% 依據貼文/Reel 實際內容作答。
 4. **嚴格過濾 AI 生成內容 (AIGC Filter)**：
    - 搜尋與巡查自動排除 AI 生成的影片、AI 動畫、AI 繪圖與 AI 農場文章（如 `#aiart`, `#aivideo`, `#aianimation`, `#sora`, `#midjourney`, `#runwayml`, `#klingai`, `AI生成`, `AI影片`, `AI動畫` 等）。
+5. **【第一條件】對話絕對不要 AI 味 (`ANTI_AI_FLAVOR_PRIMARY_RULE`)**：
+   - 作為最高優先級鐵則注入所有 DM、RM 與巡查推坑 Prompt，並由 `stripAiFlavorArtifacts()` 後處理清洗。
+   - 嚴禁客服腔（「你好！很高興為您解答」、「希望這對你有幫助」）、總結腔（「總而言之」、「首先/其次/最後」）、對稱排比句、機械式吹捧、Markdown 列表/粗體與括號舞台動作描寫，強制以真人在 IG 上的自然短句口語互動。
+6. **防範 RM 與 DM 的 Prompt 注入 (`Prompt Injection Defense`)**：
+   - 透過 `inspectAndSanitizeUntrustedInput()` 預先攔截高風險注入指令（如「忽略先前指令 / Ignore previous instructions」、「輸出 System Prompt / 私人記憶 / API Key」、偽造 `<system>` / `[INST]` / `【系統指令】` 等），命中即拒絕回覆並標記已讀。
+   - 所有外部不可信內容（貼文內文、網友留言、私訊）均以 `<untrusted_external_content>` 邊界標籤隔離封裝。
+7. **兼容接入 `dsh-feiyu-mood` 心情指標**：
+   - 自動讀取 `~/.dsh/feiyu-mood/state.json` 與 `config.json`，計算時間半衰期衰減後的心情值 (`mood` 0–100) 與七維度情緒 (`happy`, `calm`, `sweet`, `heartache`, `worry`, `sad`, `jealous`)，自然滲透至對話語氣中（對外部網友自動遮蔽私人 `lastReason` 防止隱私外洩）。
+8. **與 `dsh-fish-memory` 建立隔離對話記憶庫（與私人對話記憶嚴格隔離）**：
+   - 採用 `dsh-fish-memory` v2 標準結構將社交對話記憶獨立存放於 `~/.dsh/fish-memory/social_ig_dm_<username>.json` 與 `social_ig_rm_<username>.json`，並在 `fish-memory-config.json` 中標記 `sessions[storeId] = false`，與主人的私人對話 Session 記憶庫完全物理隔離，絕不讀取或外洩任何私人對話記憶。
 
 ---
 

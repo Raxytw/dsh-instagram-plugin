@@ -27,6 +27,7 @@ import {
   PROMPT_INJECTION_DEFENSE_RULE,
   buildFeiyuMoodPromptBlock,
   loadOwnerMemoryInterestContext,
+  recordMediaThoughtMemory,
   sanitizeRecommendationComment,
   stripAiFlavorArtifacts,
   wrapUntrustedContent,
@@ -543,6 +544,18 @@ export async function executeRepostMedia(
   )
   ledger.recordAction('patrolComments')
 
+  // 寫入 dsh-fish-memory 貼文/Reel 轉發感想記憶庫
+  recordMediaThoughtMemory({
+    ownerOrBotKey: mentionedUsers[0] || defaultTarget || 'master',
+    mediaPk: pk,
+    mediaUrl: mcpRes.source_url || sourceUrl || (code ? `https://www.instagram.com/p/${code}/` : ''),
+    authorUsername: mcpRes.source_author || sourceAuthor || 'unknown',
+    mediaTypeLabel: repostMode === 'story' ? 'Story 限動轉發' : repostMode === 'feed' ? '動態牆轉發' : '私訊卡片轉發',
+    captionExcerpt: finalCaption.slice(0, 120),
+    thoughtText,
+    source: 'repost',
+  })
+
   log(`[Repost] ✅ 貼文/Reel (${pk}) 轉發成功！(模式: ${repostMode}, 新動態PK: ${mcpRes.repost_pk || 'N/A'})`)
 
   return {
@@ -559,3 +572,4 @@ export async function executeRepostMedia(
     commentPk: commentPk || undefined,
   }
 }
+

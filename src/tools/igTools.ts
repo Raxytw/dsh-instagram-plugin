@@ -13,9 +13,18 @@ import { InstagramPluginConfig } from '../config.js'
 import { LedgerManager } from '../lib/ledger.js'
 import type { InstagramMcpClient } from '@luoyi-dsh/instagram-mcp'
 import { executePatrolDuty } from '../duty/patrol.js'
-import { executeMentionReplyDuty } from '../duty/mentionReply.js'
+import { executeMentionReplyDuty, executeRmReplyWithMediaAndFiles } from '../duty/mentionReply.js'
 import { executeDmReplyDuty } from '../duty/dmReply.js'
 import { executeRepostMedia, generateRepostThoughtForMedia, type RepostMode } from '../duty/repost.js'
+import {
+  loadSocialFishStore,
+  saveSocialFishStore,
+  buildIsolatedSocialStoreId,
+  recordSocialInteractionMemory,
+  recordMediaThoughtMemory,
+  recallSocialMemories,
+  recallMediaThoughtMemories,
+} from '../lib/companion.js'
 
 export function registerIgTools(
   ctx: any,
@@ -201,7 +210,7 @@ export function registerIgTools(
 
     {
       name: 'ig_manual_reply_post',
-      description: '手動在特定 Instagram 貼文下發布留言或針對特定留言進行子留言回覆',
+      description: '手動在特定 Instagram 貼文下發布留言或針對特定留言進行子留言回覆（RM），並支援傳送圖片到 RM（透過附圖連動私訊或限動標註）',
       parameters: {
         type: 'object',
         properties: {
@@ -217,11 +226,30 @@ export function registerIgTools(
             type: 'string',
             description: '可選：欲回覆之留言 PK（若為新留言則留空）',
           },
+          image_path: {
+            type: 'string',
+            description: '可選：欲傳送到 RM 的本地圖片路徑或 data:image/...;base64',
+          },
+          image_url: {
+            type: 'string',
+            description: '可選：欲傳送到 RM 的遠端圖片 URL 或 data:image/...;base64',
+          },
+          target_username: {
+            type: 'string',
+            description: '可選：RM 互動的目標用戶 Instagram 帳號（供附圖連動直傳或標註）',
+          },
         },
         required: ['media_pk', 'text'],
         additionalProperties: false,
       },
-      execute: async (args: { media_pk: string; text: string; reply_to_comment_pk?: string }) => {
+      execute: async (args: {
+        media_pk: string
+        text: string
+        reply_to_comment_pk?: string
+        image_path?: string
+        image_url?: string
+        target_username?: string
+      }) => {
         const mcp = getMcp()
         if (!mcp || !mcp.isRunning) {
           return { ok: false, error: 'Instagram MCP 服務尚未就緒，請稍候' }
@@ -230,11 +258,14 @@ export function registerIgTools(
           log(`[Tools] ⏭️ 攔截重複留言：貼文/Reel ${args.media_pk} 已經發送過留言，禁止重複發送`)
           return { ok: false, duplicate: true, error: `貼文或 Reel (${args.media_pk}) 已經發送過留言，不可重複發送` }
         }
-        log(`[Tools] 主模型手動在貼文 ${args.media_pk} 發布留言`)
+        log(`[Tools] 主模型手動在貼文 ${args.media_pk} 發布留言 (附圖=${Boolean(args.image_path || args.image_url)})`)
         const res = await mcp.igPostComment({
           media_pk: args.media_pk,
           text: args.text,
           reply_to_comment_pk: args.reply_to_comment_pk || '',
+          image_path: args.image_path || '',
+          image_url: args.image_url || '',
+          target_username: args.target_username || '',
           jitter_min: 1.0,
           jitter_max: 2.0,
         })
@@ -242,6 +273,72 @@ export function registerIgTools(
           ledger.markSeenPost(args.media_pk, { recommended: true })
         }
         return res
+      },
+    },
+
+    {
+      name: 'ig_reply_rm_media',
+      description:
+        '針對被 @ 的貼文或 Reel 留言（RM）進行多模態 AI 應答與附圖回傳：相容讀取貼文/Reel 內容、圖片內容與附帶文件內容（自動防 Prompt 注入消毒），將圖片丟給模型解析（正常使用 DeepSeek，使用額外訂閱額度時走選定的模型如 gemini-3-flash），並可一併傳送圖片到 RM 與寫入 dsh-fish-memory。',
+      parameters: {
+        type: 'object',
+        properties: {
+          media_pk_or_url: {
+            type: 'string',
+            description: '貼文或 Reel 的唯一識別碼 (Media PK)、Shortcode 或完整網址',
+          },
+          reply_to_comment_pk: {
+            type: 'string',
+            description: '可選：要回覆的具體留言 PK',
+          },
+          target_username: {
+            type: 'string',
+            description: '可選：互動目標用戶 Instagram 帳號',
+          },
+          custom_reply_text: {
+            type: 'string',
+            description: '可選：指定手動回覆文字（留空則由 AI 讀取貼文與圖片真實內容動態生成，徹底去 AI 味）',
+          },
+          send_image_path_or_url: {
+            type: 'string',
+            description: '可選：欲一併傳送給 RM 對象的圖片本地路徑、遠端 URL 或 data:image/...;base64',
+          },
+          input_file_paths: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '可選：傳入模型輔助參考的本地文字/文件路徑（如 .txt, .md, .json, .csv）',
+          },
+          publish_now: {
+            type: 'boolean',
+            description: '是否立即發布留言與傳送圖片（預設 true，若為 false 僅生成預覽）',
+          },
+        },
+        required: ['media_pk_or_url'],
+        additionalProperties: false,
+      },
+      execute: async (args: {
+        media_pk_or_url: string
+        reply_to_comment_pk?: string
+        target_username?: string
+        custom_reply_text?: string
+        send_image_path_or_url?: string
+        input_file_paths?: string[]
+        publish_now?: boolean
+      }) => {
+        const mcp = getMcp()
+        if (!mcp || !mcp.isRunning) {
+          return { ok: false, error: 'Instagram MCP 服務尚未就緒，請稍候' }
+        }
+        log(`[Tools] 觸發 RM 多模態應答與附圖: ${args.media_pk_or_url}`)
+        return await executeRmReplyWithMediaAndFiles(ctx, config, mcp, ledger, {
+          mediaPkOrUrl: args.media_pk_or_url,
+          replyToCommentPk: args.reply_to_comment_pk,
+          targetUsername: args.target_username,
+          customReplyText: args.custom_reply_text,
+          sendImagePathOrUrl: args.send_image_path_or_url,
+          inputFilePaths: args.input_file_paths,
+          publishNow: args.publish_now !== false,
+        }, log)
       },
     },
 
@@ -376,7 +473,7 @@ export function registerIgTools(
 
     {
       name: 'ig_manual_send_dm',
-      description: '手動發送私訊至指定 Instagram 對話線程',
+      description: '手動發送私訊至指定 Instagram 對話線程（支援發送文字、圖片與檔案）',
       parameters: {
         type: 'object',
         properties: {
@@ -388,11 +485,29 @@ export function registerIgTools(
             type: 'string',
             description: '私訊文字內容',
           },
+          image_path: {
+            type: 'string',
+            description: '可選：欲發送的本地圖片檔案路徑或 data:image/...;base64',
+          },
+          image_url: {
+            type: 'string',
+            description: '可選：欲發送的遠端圖片 URL 或 data:image/...;base64',
+          },
+          file_path: {
+            type: 'string',
+            description: '可選：欲發送的本地檔案路徑',
+          },
         },
         required: ['thread_id', 'text'],
         additionalProperties: false,
       },
-      execute: async (args: { thread_id: string; text: string }) => {
+      execute: async (args: {
+        thread_id: string
+        text: string
+        image_path?: string
+        image_url?: string
+        file_path?: string
+      }) => {
         const mcp = getMcp()
         if (!mcp || !mcp.isRunning) {
           return { ok: false, error: 'Instagram MCP 服務尚未就緒，請稍候' }
@@ -401,10 +516,132 @@ export function registerIgTools(
         const res = await mcp.igSendDm({
           thread_id: args.thread_id,
           text: args.text,
+          image_path: args.image_path || '',
+          image_url: args.image_url || '',
+          file_path: args.file_path || '',
           jitter_min: 1.0,
           jitter_max: 2.0,
         })
         return res
+      },
+    },
+
+    {
+      name: 'ig_fish_memory',
+      description:
+        '讀取或寫入 dsh-fish-memory 記憶庫，支援檢索或記錄 Instagram DM、RM 的聊天紀錄，以及刷 Reel 與貼文的感想內容（與主人私人對話物理隔離，嚴防注入攻擊）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['read', 'write'],
+            description: '操作類型：read (讀取記憶) 或 write (寫入記憶)',
+          },
+          category: {
+            type: 'string',
+            enum: ['dm', 'rm', 'thought'],
+            description: '記憶分類：dm (私訊紀錄)、rm (貼文 @ 提及留言紀錄)、thought (刷 Reel 或貼文的感想內容)',
+          },
+          username: {
+            type: 'string',
+            description: '互動對象 Instagram 帳號（若為刷貼文感想可不填，預設為主人帳號）',
+          },
+          user_text: {
+            type: 'string',
+            description: '寫入時：對方說的話，或被刷到的貼文/Reel 內容摘要',
+          },
+          bot_reply: {
+            type: 'string',
+            description: '寫入時：機器人的回覆內容，或對該貼文/Reel 的感想',
+          },
+          media_pk: {
+            type: 'string',
+            description: '可選：關聯的貼文或 Reel PK / 短碼',
+          },
+          media_url: {
+            type: 'string',
+            description: '可選：關聯的貼文或 Reel 網址',
+          },
+          query: {
+            type: 'string',
+            description: '讀取時：檢索關鍵字',
+          },
+          limit: {
+            type: 'number',
+            description: '讀取時：返回的最大筆數（預設 6）',
+          },
+        },
+        required: ['action', 'category'],
+        additionalProperties: false,
+      },
+      execute: async (args: {
+        action: 'read' | 'write'
+        category: 'dm' | 'rm' | 'thought'
+        username?: string
+        user_text?: string
+        bot_reply?: string
+        media_pk?: string
+        media_url?: string
+        query?: string
+        limit?: number
+      }) => {
+        const cat = args.category || 'thought'
+        const targetUser = (args.username || config.targetMentionUser || 'master').replace(/^@/, '').trim()
+
+        if (args.action === 'write') {
+          if (cat === 'thought') {
+            recordMediaThoughtMemory({
+              ownerOrBotKey: targetUser || 'master',
+              mediaPk: args.media_pk || `pk_${Date.now()}`,
+              mediaUrl: args.media_url,
+              authorUsername: targetUser,
+              mediaTypeLabel: '貼文/Reel',
+              captionExcerpt: args.user_text || '',
+              thoughtText: args.bot_reply || '',
+              source: 'tool_manual',
+            })
+            return { ok: true, action: 'write', category: 'thought', message: '已成功將 Reel/貼文感想寫入 dsh-fish-memory' }
+          } else {
+            recordSocialInteractionMemory({
+              platform: 'ig',
+              channelType: cat,
+              targetUser,
+              userMessage: args.user_text || '',
+              botReply: args.bot_reply || '',
+              contextNote: `工具寫入${cat.toUpperCase()}`,
+              mediaPk: args.media_pk,
+            })
+            return { ok: true, action: 'write', category: cat, message: `已成功將 ${cat.toUpperCase()} 聊天紀錄寫入 dsh-fish-memory` }
+          }
+        }
+
+        // action === 'read'
+        if (cat === 'thought') {
+          const memoriesStr = recallMediaThoughtMemories(targetUser || 'master', args.query || '', args.limit || 6)
+          const storeId = buildIsolatedSocialStoreId('ig', 'thoughts', targetUser || 'master')
+          const store = loadSocialFishStore(storeId)
+          return {
+            ok: true,
+            action: 'read',
+            category: 'thought',
+            rendered: memoriesStr,
+            recentMessages: (store.messages || []).slice(-(args.limit || 10)),
+            itemCount: store.memories.length,
+          }
+        } else {
+          const memoriesStr = recallSocialMemories('ig', cat, targetUser, args.query || '', args.limit || 6)
+          const storeId = buildIsolatedSocialStoreId('ig', cat, targetUser)
+          const store = loadSocialFishStore(storeId)
+          return {
+            ok: true,
+            action: 'read',
+            category: cat,
+            rendered: memoriesStr,
+            recentMessages: (store.messages || []).slice(-(args.limit || 10)),
+            itemCount: store.memories.length,
+          }
+        }
       },
     },
 

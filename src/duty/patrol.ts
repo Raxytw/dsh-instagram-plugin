@@ -22,6 +22,7 @@ import {
   buildFeiyuMoodPromptBlock,
   loadOwnerMemoryInterestContext,
   parseRecommendationLlmOutput,
+  recordMediaThoughtMemory,
   sanitizeRecommendationComment,
   wrapUntrustedContent,
 } from '../lib/companion.js'
@@ -398,6 +399,18 @@ ${wrapUntrustedContent('post_caption', fullCaption.slice(0, 800))}
             recommended++
             ledger.recordAction('patrolComments')
             log(`[Patrol] ✅ 推坑留言發布成功 (PK: ${pk})`)
+
+            // 寫入 dsh-fish-memory 貼文/Reel 瀏覽感想記憶庫
+            recordMediaThoughtMemory({
+              ownerOrBotKey: targetMentionUser || 'master',
+              mediaPk: pk,
+              mediaUrl: post.url || `https://www.instagram.com/p/${post.code || pk}/`,
+              authorUsername: authorName,
+              mediaTypeLabel: post.media_type === 2 || post.product_type === 'clips' ? 'Reel 連續短片' : '貼文',
+              captionExcerpt: fullCaption.slice(0, 120),
+              thoughtText: cleanReason,
+              source: 'patrol',
+            })
 
             // 若開啟「巡查推薦時同步轉發貼文/Reel」(repostOnPatrol)，將該貼文/Reel 連同 @用戶 與對該內容的感想一併轉發
             if (config.repostOnPatrol) {

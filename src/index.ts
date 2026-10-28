@@ -20,11 +20,19 @@ import { loadSchemastery } from './lib/hostdeps.js'
 import { LedgerManager } from './lib/ledger.js'
 import { registerIgTools } from './tools/igTools.js'
 import { executePatrolDuty } from './duty/patrol.js'
-import { executeMentionReplyDuty } from './duty/mentionReply.js'
+import { executeMentionReplyDuty, executeRmReplyWithMediaAndFiles } from './duty/mentionReply.js'
 import { executeDmReplyDuty } from './duty/dmReply.js'
 import { executeRepostMedia, generateRepostThoughtForMedia } from './duty/repost.js'
 import { getAuthorizedSubscriptionProviders, testLlmConnection } from './lib/llm.js'
-import { getSocialFishMemoryStats } from './lib/companion.js'
+import {
+  getSocialFishMemoryStats,
+  loadSocialFishStore,
+  buildIsolatedSocialStoreId,
+  recordSocialInteractionMemory,
+  recordMediaThoughtMemory,
+  recallSocialMemories,
+  recallMediaThoughtMemories,
+} from './lib/companion.js'
 import {
   type InstagramMcpClient,
   getSharedMcpClient,
@@ -484,6 +492,102 @@ export function apply(ctx: any, userConfig: Partial<InstagramPluginConfig> = {})
           log
         )
         return sendJson(res, repostRes.ok ? 200 : 400, repostRes)
+      }
+
+      // 支援多模態 RM 應答與附圖直傳 (讀取貼文/Reel、圖片、文件並防 Prompt 注入)
+      if (req.method === 'POST' && pathname === '/api/instagram/rm/reply') {
+        const client = getMcpClient()
+        if (!client || !client.ready) {
+          return sendJson(res, 503, { ok: false, error: 'FastMCP 服務尚未就緒，請確認 dsh-instagram-mcp 已啟動。' })
+        }
+        const body = await readBody(req)
+        const mediaPkOrUrl = String(body.mediaPkOrUrl || body.media_pk || body.url || '').trim()
+        if (!mediaPkOrUrl) {
+          return sendJson(res, 400, { ok: false, error: '請輸入貼文或 Reel 的 PK 或網址' })
+        }
+        const rmRes = await executeRmReplyWithMediaAndFiles(
+          ctx,
+          activeConfig,
+          client,
+          ledger,
+          {
+            mediaPkOrUrl,
+            replyToCommentPk: body.replyToCommentPk || body.commentPk,
+            targetUsername: body.targetUsername || body.username,
+            customReplyText: body.customReplyText || body.text,
+            sendImagePathOrUrl: body.sendImagePathOrUrl || body.imagePath || body.imageUrl,
+            inputImageUrls: Array.isArray(body.inputImageUrls) ? body.inputImageUrls : [],
+            inputFilePaths: Array.isArray(body.inputFilePaths) ? body.inputFilePaths : [],
+            inlineFileContents: Array.isArray(body.inlineFileContents) ? body.inlineFileContents : [],
+            publishNow: body.publishNow !== false,
+          },
+          log
+        )
+        return sendJson(res, rmRes.ok ? 200 : 400, rmRes)
+      }
+
+      // 讀取 dsh-fish-memory 社交隔離記憶庫
+      if (req.method === 'GET' && pathname === '/api/instagram/fish-memory') {
+        const cat = (url.searchParams.get('category') || 'thought').toLowerCase()
+        const user = (url.searchParams.get('username') || activeConfig.targetMentionUser || 'master')
+          .replace(/^@/, '')
+          .trim()
+        const q = url.searchParams.get('q') || ''
+        const limit = Number(url.searchParams.get('limit')) || 10
+        if (cat === 'thought') {
+          const rendered = recallMediaThoughtMemories(user || 'master', q, limit)
+          const store = loadSocialFishStore(buildIsolatedSocialStoreId('ig', 'thoughts', user || 'master'))
+          return sendJson(res, 200, {
+            ok: true,
+            category: 'thought',
+            rendered,
+            messages: (store.messages || []).slice(-limit),
+            memories: store.memories.slice(-limit),
+            count: store.memories.length,
+          })
+        } else {
+          const rendered = recallSocialMemories('ig', cat as any, user, q, limit)
+          const store = loadSocialFishStore(buildIsolatedSocialStoreId('ig', cat as any, user))
+          return sendJson(res, 200, {
+            ok: true,
+            category: cat,
+            rendered,
+            messages: (store.messages || []).slice(-limit),
+            memories: store.memories.slice(-limit),
+            count: store.memories.length,
+          })
+        }
+      }
+
+      // 寫入 dsh-fish-memory 社交記憶庫 (支援 DM/RM 對話與 Reel/貼文感想寫入)
+      if (req.method === 'POST' && pathname === '/api/instagram/fish-memory') {
+        const body = await readBody(req)
+        const cat = String(body.category || 'thought').toLowerCase()
+        const targetUser = (body.username || activeConfig.targetMentionUser || 'master').replace(/^@/, '').trim()
+        if (cat === 'thought') {
+          recordMediaThoughtMemory({
+            ownerOrBotKey: targetUser || 'master',
+            mediaPk: body.mediaPk || `pk_${Date.now()}`,
+            mediaUrl: body.mediaUrl,
+            authorUsername: targetUser,
+            mediaTypeLabel: body.mediaTypeLabel || '貼文/Reel',
+            captionExcerpt: body.userText || body.caption || '',
+            thoughtText: body.botReply || body.thought || '',
+            source: 'web_manual',
+          })
+          return sendJson(res, 200, { ok: true, message: '已成功將 Reel/貼文感想寫入 dsh-fish-memory' })
+        } else {
+          recordSocialInteractionMemory({
+            platform: 'ig',
+            channelType: cat as any,
+            targetUser,
+            userMessage: body.userText || '',
+            botReply: body.botReply || '',
+            contextNote: `Web手動${cat.toUpperCase()}`,
+            mediaPk: body.mediaPk,
+          })
+          return sendJson(res, 200, { ok: true, message: `已成功將 ${cat.toUpperCase()} 聊天紀錄寫入 dsh-fish-memory` })
+        }
       }
 
       sendJson(res, 404, { ok: false, error: `Not found: ${pathname}` })

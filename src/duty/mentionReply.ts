@@ -106,6 +106,15 @@ export async function executeMentionReplyDuty(
     return { ok: true, scannedComments: 0, repliedCount: 0, notes }
   }
 
+  // 防風控冷卻保護檢查
+  if (ledger.isInCooldown()) {
+    const rem = ledger.getCooldownRemainingSeconds()
+    const reason = ledger.getCooldownReason()
+    notes.push(`防風控冷卻保護中（剩餘 ${rem} 秒，原因: ${reason}），暫停提問回覆`)
+    log(`[MentionReply] 🚨 帳號目前處於防風控冷卻期（剩餘 ${rem} 秒），本輪跳過提問應答`)
+    return { ok: true, scannedComments: 0, repliedCount: 0, notes }
+  }
+
   const svc = (globalThis as any).__DSH_INSTAGRAM_MCP__
   const fallbackUser = svc?.loginStatus?.username || ''
   const botName = (config.botUsername || fallbackUser || '').replace(/^@/, '').trim().toLowerCase()
@@ -114,19 +123,28 @@ export async function executeMentionReplyDuty(
     return { ok: true, scannedComments: 0, repliedCount: 0, notes }
   }
 
+  // 小時頻次防護
+  if (!ledger.canDoHourly('mentionReplies', config.maxHourlyMentionReplies || 5)) {
+    notes.push(`已達每小時被 @ 回覆上限 (${config.maxHourlyMentionReplies || 5} 則)`)
+    log(`[MentionReply] 已達近一小時被 @ 回覆上限 (${config.maxHourlyMentionReplies || 5} 則)，本輪不再回覆新留言`)
+    return { ok: true, scannedComments: 0, repliedCount: 0, notes }
+  }
+
   if (!ledger.canDoDaily('mentionReplies', config.maxDailyMentionReplies)) {
     notes.push(`已達每日被 @ 回覆上限 (${config.maxDailyMentionReplies} 則)`)
     return { ok: true, scannedComments: 0, repliedCount: 0, notes }
   }
 
+  const maxPerRun = config.maxMentionRepliesPerRun || 2
+
   // 取得巡查帳本中最近記錄的貼文清單來掃描評論區
   const ledgerState = (ledger as any).state || {}
   const candidatePostPks = Object.keys(ledgerState.seenPosts || {}).slice(-15).reverse()
 
-  log(`[MentionReply] 開始檢查近期 ${candidatePostPks.length} 則貼文評論區中 @${botName} 的提問...`)
+  log(`[MentionReply] 開始檢查近期 ${candidatePostPks.length} 則貼文評論區中 @${botName} 的提問 (本輪上限: ${maxPerRun} 則)...`)
 
   for (const postPk of candidatePostPks) {
-    if (!ledger.canDoDaily('mentionReplies', config.maxDailyMentionReplies)) {
+    if (replied >= maxPerRun || !ledger.canDoDaily('mentionReplies', config.maxDailyMentionReplies) || !ledger.canDoHourly('mentionReplies', config.maxHourlyMentionReplies || 5)) {
       break
     }
 
@@ -208,7 +226,14 @@ ${neighborComments || '(無相鄰留言)'}`
         const systemPrompt = config.mentionPersonaPrompt || '你是一個溫和聰慧的 AI 助理。'
         const generatedAnswer = await callLlmForReply(ctx, systemPrompt, postContextText, commentUser, commentText)
 
-        // 6. 發布巢狀子留言回覆 (Reply)
+        // 6. 防風控間隔等待
+        if (replied > 0) {
+          const waitSec = config.minCommentIntervalSeconds || 30
+          log(`[MentionReply] 🛡️ 防風控間隔等待 ${waitSec} 秒...`)
+          await new Promise((r) => setTimeout(r, waitSec * 1000))
+        }
+
+        // 7. 發布巢狀子留言回覆 (Reply)
         const replyText = `@${commentUser} ${generatedAnswer}`.trim()
         log(`[MentionReply] 正在以巢狀留言回覆 @${commentUser}: ${replyText.slice(0, 50)}...`)
 
@@ -220,11 +245,18 @@ ${neighborComments || '(無相鄰留言)'}`
           jitter_max: config.jitterMaxSeconds,
         })
 
+        if (postResult?.in_cooldown || (postResult?.error && /action block|feedback|checkpoint|please wait|rate limit/i.test(postResult.error))) {
+          ledger.triggerCooldown(config.cooldownMinutesOnBlock || 30, postResult.error || 'Instagram 頻率風控阻擋')
+          log(`[MentionReply] 🚨 偵測到風控或熔斷保護，停止後續回覆動作！`)
+          notes.push(`觸發防風控熔斷: ${postResult.error}`)
+          break
+        }
+
         if (postResult?.ok) {
           replied++
           ledger.markSeenComment(commentPk, { postPk, user: commentUser })
           ledger.incrementPostReplyRound(postPk)
-          ledger.incrementDaily('mentionReplies')
+          ledger.recordAction('mentionReplies')
           log(`[MentionReply] 成功回覆留言 (Post PK: ${postPk}, Comment PK: ${commentPk})`)
         } else {
           log(`[MentionReply] 回覆留言失敗: ${postResult?.error || JSON.stringify(postResult)}`)
@@ -232,6 +264,10 @@ ${neighborComments || '(無相鄰留言)'}`
       }
     } catch (postErr: any) {
       log(`[MentionReply] 處理貼文 ${postPk} 留言異常: ${postErr.message}`)
+      if (/feedback|action block|checkpoint|rate limit/i.test(postErr.message)) {
+        ledger.triggerCooldown(config.cooldownMinutesOnBlock || 30, postErr.message)
+        break
+      }
     }
   }
 

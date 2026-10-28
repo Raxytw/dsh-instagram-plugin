@@ -101,12 +101,29 @@ export async function executeDmReplyDuty(
     return { ok: true, processedThreads: 0, repliedCount: 0, notes }
   }
 
+  // 防風控冷卻保護檢查
+  if (ledger.isInCooldown()) {
+    const rem = ledger.getCooldownRemainingSeconds()
+    const reason = ledger.getCooldownReason()
+    notes.push(`防風控冷卻保護中（剩餘 ${rem} 秒，原因: ${reason}），暫停私訊應答`)
+    log(`[DmReply] 🚨 帳號目前處於防風控冷卻期（剩餘 ${rem} 秒），本輪跳過私訊應答`)
+    return { ok: true, processedThreads: 0, repliedCount: 0, notes }
+  }
+
+  // 小時頻次防護
+  if (!ledger.canDoHourly('dmReplies', config.maxHourlyDmReplies || 8)) {
+    notes.push(`已達每小時私訊回覆上限 (${config.maxHourlyDmReplies || 8} 則)`)
+    log(`[DmReply] 已達近一小時私訊回覆上限 (${config.maxHourlyDmReplies || 8} 則)，本輪不再回覆新私訊`)
+    return { ok: true, processedThreads: 0, repliedCount: 0, notes }
+  }
+
   if (!ledger.canDoDaily('dmReplies', config.dmDailyCap)) {
     notes.push(`已達全域每日私訊回覆上限 (${config.dmDailyCap} 則)`)
     return { ok: true, processedThreads: 0, repliedCount: 0, notes }
   }
 
-  log('[DmReply] 開始檢查未讀私訊會話...')
+  const maxPerRun = config.maxDmRepliesPerRun || 3
+  log(`[DmReply] 開始檢查未讀私訊會話 (本輪上限: ${maxPerRun} 則)...`)
 
   try {
     const res = await mcp.igGetUnreadDms(10)
@@ -114,7 +131,7 @@ export async function executeDmReplyDuty(
     log(`[DmReply] 獲取到 ${threads.length} 條私訊對話線程`)
 
     for (const thread of threads) {
-      if (!ledger.canDoDaily('dmReplies', config.dmDailyCap)) {
+      if (replied >= maxPerRun || !ledger.canDoDaily('dmReplies', config.dmDailyCap) || !ledger.canDoHourly('dmReplies', config.maxHourlyDmReplies || 8)) {
         break
       }
 
@@ -165,6 +182,12 @@ export async function executeDmReplyDuty(
       const systemPrompt = config.dmPersonaPrompt || '你是一個禮貌溫暖的社群助手。'
       const replyContent = await callLlmForDm(ctx, systemPrompt, senderUsername, lastMsg.text)
 
+      // 防風控間隔等待
+      if (replied > 0) {
+        log(`[DmReply] 🛡️ 防風控間隔等待 15 秒...`)
+        await new Promise((r) => setTimeout(r, 15000))
+      }
+
       log(`[DmReply] 準備發送私訊回覆給 @${senderUsername}: "${replyContent}"`)
 
       // 5. 調用 MCP 發送私訊
@@ -175,11 +198,18 @@ export async function executeDmReplyDuty(
         jitter_max: config.jitterMaxSeconds,
       })
 
+      if (sendRes?.in_cooldown || (sendRes?.error && /action block|feedback|checkpoint|please wait|rate limit/i.test(sendRes.error))) {
+        ledger.triggerCooldown(config.cooldownMinutesOnBlock || 30, sendRes.error || 'Instagram 頻率風控阻擋')
+        log(`[DmReply] 🚨 偵測到風控或熔斷保護，停止後續私訊回覆！`)
+        notes.push(`觸發防風控熔斷: ${sendRes.error}`)
+        break
+      }
+
       if (sendRes?.ok) {
         replied++
         ledger.markSeenMessage(msgId, { threadId, userId: senderPk })
         ledger.incrementUserDm(senderPk)
-        ledger.incrementDaily('dmReplies')
+        ledger.recordAction('dmReplies')
         log(`[DmReply] 私訊回覆成功發送至線程 ${threadId}`)
       } else {
         log(`[DmReply] 私訊發送失敗: ${sendRes?.error || JSON.stringify(sendRes)}`)
@@ -188,6 +218,9 @@ export async function executeDmReplyDuty(
   } catch (err: any) {
     log(`[DmReply] 處理未讀私訊異常: ${err.message}`)
     notes.push(`私訊處理異常: ${err.message}`)
+    if (/feedback|action block|checkpoint|rate limit/i.test(err.message)) {
+      ledger.triggerCooldown(config.cooldownMinutesOnBlock || 30, err.message)
+    }
   }
 
   notes.push(`本輪私訊檢查結束：處理未讀 ${processed} 則，成功回覆 ${replied} 則`)

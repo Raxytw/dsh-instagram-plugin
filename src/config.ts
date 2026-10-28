@@ -58,6 +58,14 @@ export interface InstagramPluginConfig {
   // === 5. 安全防風控 ===
   jitterMinSeconds: number
   jitterMaxSeconds: number
+  maxHourlyPatrolComments: number
+  maxPatrolCommentsPerRun: number
+  minCommentIntervalSeconds: number
+  maxHourlyMentionReplies: number
+  maxMentionRepliesPerRun: number
+  maxHourlyDmReplies: number
+  maxDmRepliesPerRun: number
+  cooldownMinutesOnBlock: number
 }
 
 export const defaultConfig: InstagramPluginConfig = {
@@ -97,9 +105,17 @@ export const defaultConfig: InstagramPluginConfig = {
   dmDailyCap: 30,
   dmPersonaPrompt: '你是一個禮貌、溫暖的社群助理。這是一則私訊互動，請用簡潔自然的口吻給予用戶解答或致謝。',
 
-  // 5. 安全防風控
-  jitterMinSeconds: 3,
-  jitterMaxSeconds: 6,
+  // 5. 安全防風控 (保守安全設定，保護帳號避免停權)
+  jitterMinSeconds: 6,
+  jitterMaxSeconds: 15,
+  maxHourlyPatrolComments: 3,
+  maxPatrolCommentsPerRun: 1,
+  minCommentIntervalSeconds: 30,
+  maxHourlyMentionReplies: 5,
+  maxMentionRepliesPerRun: 2,
+  maxHourlyDmReplies: 8,
+  maxDmRepliesPerRun: 3,
+  cooldownMinutesOnBlock: 30,
 }
 
 /**
@@ -156,6 +172,14 @@ export function sanitizeConfig(raw: any): InstagramPluginConfig {
 
     jitterMinSeconds: unwrapValue(c.jitterMinSeconds, defaultConfig.jitterMinSeconds),
     jitterMaxSeconds: unwrapValue(c.jitterMaxSeconds, defaultConfig.jitterMaxSeconds),
+    maxHourlyPatrolComments: unwrapValue(c.maxHourlyPatrolComments, defaultConfig.maxHourlyPatrolComments),
+    maxPatrolCommentsPerRun: unwrapValue(c.maxPatrolCommentsPerRun, defaultConfig.maxPatrolCommentsPerRun),
+    minCommentIntervalSeconds: unwrapValue(c.minCommentIntervalSeconds, defaultConfig.minCommentIntervalSeconds),
+    maxHourlyMentionReplies: unwrapValue(c.maxHourlyMentionReplies, defaultConfig.maxHourlyMentionReplies),
+    maxMentionRepliesPerRun: unwrapValue(c.maxMentionRepliesPerRun, defaultConfig.maxMentionRepliesPerRun),
+    maxHourlyDmReplies: unwrapValue(c.maxHourlyDmReplies, defaultConfig.maxHourlyDmReplies),
+    maxDmRepliesPerRun: unwrapValue(c.maxDmRepliesPerRun, defaultConfig.maxDmRepliesPerRun),
+    cooldownMinutesOnBlock: unwrapValue(c.cooldownMinutesOnBlock, defaultConfig.cooldownMinutesOnBlock),
   }
 }
 
@@ -204,8 +228,16 @@ export function buildConfigSchema(z: any) {
     dmDailyCap: z.natural().default(30).description('全域每日私訊回覆總上限').extra('volatile', true),
     dmPersonaPrompt: z.string().role('textarea').default(defaultConfig.dmPersonaPrompt).description('私訊專用回覆口吻 Prompt').extra('volatile', true),
 
-    // === 安全防風控 ===
-    jitterMinSeconds: z.number().default(3).description('動作前隨機抖動最小等待秒數').extra('volatile', true),
-    jitterMaxSeconds: z.number().default(6).description('動作前隨機抖動最大等待秒數').extra('volatile', true),
+    // === 5. 安全防風控（重要：保護帳號避免被 Instagram 偵測為機器人或封禁） ===
+    jitterMinSeconds: z.number().default(6).description('動作前隨機抖動最小等待秒數 (建議 6 秒以上)').extra('volatile', true),
+    jitterMaxSeconds: z.number().default(15).description('動作前隨機抖動最大等待秒數 (建議 15 秒以上)').extra('volatile', true),
+    maxHourlyPatrolComments: z.natural().default(3).description('每小時巡查推坑留言上限 (防風控頻次保護)').extra('volatile', true),
+    maxPatrolCommentsPerRun: z.natural().default(1).description('單次巡查任務最多發布的推坑留言則數 (避免短時間連發)').extra('volatile', true),
+    minCommentIntervalSeconds: z.natural().default(30).description('同輪若有多筆留言時的最小強制間隔秒數').extra('volatile', true),
+    maxHourlyMentionReplies: z.natural().default(5).description('每小時被 @ 提問回覆上限').extra('volatile', true),
+    maxMentionRepliesPerRun: z.natural().default(2).description('單次被 @ 提問檢查最多回覆留言則數').extra('volatile', true),
+    maxHourlyDmReplies: z.natural().default(8).description('每小時私訊自動回覆上限').extra('volatile', true),
+    maxDmRepliesPerRun: z.natural().default(3).description('單次私訊檢查最多回覆線程數').extra('volatile', true),
+    cooldownMinutesOnBlock: z.natural().default(30).description('遇官方 Action Block / 頻率限制時自動熔斷暫停分鐘數').extra('volatile', true),
   })
 }

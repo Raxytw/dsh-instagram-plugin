@@ -98,9 +98,25 @@ export async function executePatrolDuty(
     return { ok: true, processedPosts: 0, recommendedCount: 0, notes }
   }
 
+  // 防風控冷卻保護檢查
+  if (ledger.isInCooldown()) {
+    const rem = ledger.getCooldownRemainingSeconds()
+    const reason = ledger.getCooldownReason()
+    notes.push(`防風控冷卻保護中（剩餘 ${rem} 秒，原因: ${reason}），暫停巡查`)
+    log(`[Patrol] 🚨 帳號目前處於防風控冷卻期（剩餘 ${rem} 秒），本輪跳過巡查以避免帳號停權`)
+    return { ok: true, processedPosts: 0, recommendedCount: 0, notes }
+  }
+
   if (!config.targetMentionUser) {
     notes.push('未設定推坑目標用戶 (targetMentionUser 為空)，跳過巡查')
     log('[Patrol] 提示：若需開啟推坑留言，請在設定中指定 targetMentionUser')
+    return { ok: true, processedPosts: 0, recommendedCount: 0, notes }
+  }
+
+  // 小時頻次防護
+  if (!ledger.canDoHourly('patrolComments', config.maxHourlyPatrolComments || 3)) {
+    notes.push(`已達每小時巡查推薦留言上限 (${config.maxHourlyPatrolComments || 3} 則)`)
+    log(`[Patrol] 已達近一小時推坑上限 (${config.maxHourlyPatrolComments || 3} 則)，本輪不再發布新留言`)
     return { ok: true, processedPosts: 0, recommendedCount: 0, notes }
   }
 
@@ -116,10 +132,11 @@ export async function executePatrolDuty(
     return { ok: true, processedPosts: 0, recommendedCount: 0, notes }
   }
 
-  log(`[Patrol] 開始執行標籤巡查，共 ${hashtags.length} 個標籤...`)
+  const maxPerRun = config.maxPatrolCommentsPerRun || 1
+  log(`[Patrol] 開始執行標籤巡查，共 ${hashtags.length} 個標籤 (本輪推坑上限: ${maxPerRun} 則)...`)
 
   for (const tag of hashtags) {
-    if (!ledger.canDoDaily('patrolComments', config.maxDailyPatrolComments)) {
+    if (recommended >= maxPerRun || !ledger.canDoDaily('patrolComments', config.maxDailyPatrolComments) || !ledger.canDoHourly('patrolComments', config.maxHourlyPatrolComments || 3)) {
       break
     }
 
@@ -129,7 +146,7 @@ export async function executePatrolDuty(
       log(`[Patrol] 標籤 #${tag} 抓取到 ${posts.length} 則貼文`)
 
       for (const post of posts) {
-        if (!ledger.canDoDaily('patrolComments', config.maxDailyPatrolComments)) {
+        if (recommended >= maxPerRun || !ledger.canDoDaily('patrolComments', config.maxDailyPatrolComments) || !ledger.canDoHourly('patrolComments', config.maxHourlyPatrolComments || 3)) {
           break
         }
 
@@ -197,6 +214,12 @@ ${caption.slice(0, 500)}
 
         // 6. 若符合推薦標準，留言推坑
         if (isRecommend) {
+          if (recommended > 0) {
+            const waitSec = config.minCommentIntervalSeconds || 30
+            log(`[Patrol] 🛡️ 防風控間隔等待 ${waitSec} 秒...`)
+            await new Promise((r) => setTimeout(r, waitSec * 1000))
+          }
+
           let commentText = config.recommendTemplate || '@{targetUser} 這篇關於 #{hashtag} 的內容很值得一看：{summary}'
           commentText = commentText
             .replace('{targetUser}', config.targetMentionUser.replace(/^@/, ''))
@@ -212,10 +235,17 @@ ${caption.slice(0, 500)}
             jitter_max: config.jitterMaxSeconds,
           })
 
+          if (postRes?.in_cooldown || (postRes?.error && /action block|feedback|checkpoint|please wait|rate limit/i.test(postRes.error))) {
+            ledger.triggerCooldown(config.cooldownMinutesOnBlock || 30, postRes.error || 'Instagram 頻率風控阻擋')
+            log(`[Patrol] 🚨 偵測到風控或熔斷保護，停止後續巡查動作！`)
+            notes.push(`觸發防風控熔斷: ${postRes.error}`)
+            break
+          }
+
           if (postRes?.ok) {
             recommended++
             ledger.markSeenPost(pk, { hashtag: tag, recommended: true })
-            ledger.incrementDaily('patrolComments')
+            ledger.recordAction('patrolComments')
             log(`[Patrol] 推坑留言發布成功 (PK: ${pk})`)
           } else {
             log(`[Patrol] 留言發布失敗: ${postRes?.error || JSON.stringify(postRes)}`)
@@ -227,6 +257,10 @@ ${caption.slice(0, 500)}
     } catch (tagErr: any) {
       log(`[Patrol] 巡查標籤 #${tag} 發生錯誤: ${tagErr.message}`)
       notes.push(`標籤 #${tag} 異常: ${tagErr.message}`)
+      if (/feedback|action block|checkpoint|rate limit/i.test(tagErr.message)) {
+        ledger.triggerCooldown(config.cooldownMinutesOnBlock || 30, tagErr.message)
+        break
+      }
     }
   }
 

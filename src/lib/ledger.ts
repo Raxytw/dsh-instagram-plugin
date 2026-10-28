@@ -20,12 +20,20 @@ export interface DailyStats {
   userDms: Record<string, number>
 }
 
+export interface HourlyAction {
+  type: 'patrolComments' | 'mentionReplies' | 'dmReplies'
+  time: number
+}
+
 export interface LedgerState {
   seenPosts: Record<string, { timestamp: string; hashtag?: string; recommended?: boolean }>
   seenComments: Record<string, { timestamp: string; postPk?: string; user?: string }>
   seenMessages: Record<string, { timestamp: string; threadId?: string; userId?: string }>
   postReplyRounds: Record<string, number>
   dailyStats: DailyStats
+  hourlyActions?: HourlyAction[]
+  cooldownUntil?: number
+  cooldownReason?: string
 }
 
 export class LedgerManager {
@@ -81,6 +89,9 @@ export class LedgerManager {
             seenMessages: parsed.seenMessages || {},
             postReplyRounds: parsed.postReplyRounds || {},
             dailyStats: parsed.dailyStats || defaultState.dailyStats,
+            hourlyActions: Array.isArray(parsed.hourlyActions) ? parsed.hourlyActions : [],
+            cooldownUntil: parsed.cooldownUntil || 0,
+            cooldownReason: parsed.cooldownReason || '',
           }
           if (!loaded.dailyStats.userDms) {
             loaded.dailyStats.userDms = {}
@@ -218,4 +229,65 @@ export class LedgerManager {
     this.checkRollover()
     return { ...this.state.dailyStats }
   }
+
+  // === 防風控熔斷冷卻 (Circuit Breaker Cooldown) ===
+  public isInCooldown(): boolean {
+    return typeof this.state.cooldownUntil === 'number' && Date.now() < this.state.cooldownUntil
+  }
+
+  public getCooldownRemainingSeconds(): number {
+    if (!this.isInCooldown()) return 0
+    return Math.max(0, Math.ceil((this.state.cooldownUntil! - Date.now()) / 1000))
+  }
+
+  public getCooldownReason(): string {
+    return this.state.cooldownReason || ''
+  }
+
+  public triggerCooldown(minutes = 30, reason = ''): void {
+    this.state.cooldownUntil = Date.now() + minutes * 60 * 1000
+    this.state.cooldownReason = reason
+    this.save()
+    console.warn(
+      `[Ledger] 🚨 觸發防風控冷卻保護！持續 ${minutes} 分鐘 (至 ${new Date(this.state.cooldownUntil).toLocaleTimeString()})。原因: ${reason}`
+    )
+  }
+
+  public resetCooldown(): void {
+    this.state.cooldownUntil = 0
+    this.state.cooldownReason = ''
+    this.save()
+  }
+
+  // === 小時頻次防護 ===
+  private cleanOldHourlyActions(): void {
+    const oneHourAgo = Date.now() - 3600 * 1000
+    if (!Array.isArray(this.state.hourlyActions)) {
+      this.state.hourlyActions = []
+      return
+    }
+    this.state.hourlyActions = this.state.hourlyActions.filter((a) => a.time >= oneHourAgo)
+  }
+
+  public getHourlyCount(type: 'patrolComments' | 'mentionReplies' | 'dmReplies'): number {
+    this.cleanOldHourlyActions()
+    return (this.state.hourlyActions || []).filter((a) => a.type === type).length
+  }
+
+  public canDoHourly(type: 'patrolComments' | 'mentionReplies' | 'dmReplies', hourlyCap: number): boolean {
+    if (this.isInCooldown()) return false
+    if (hourlyCap <= 0) return true
+    this.cleanOldHourlyActions()
+    return this.getHourlyCount(type) < hourlyCap
+  }
+
+  public recordAction(type: 'patrolComments' | 'mentionReplies' | 'dmReplies'): void {
+    this.cleanOldHourlyActions()
+    if (!Array.isArray(this.state.hourlyActions)) {
+      this.state.hourlyActions = []
+    }
+    this.state.hourlyActions.push({ type, time: Date.now() })
+    this.incrementDaily(type)
+  }
 }
+

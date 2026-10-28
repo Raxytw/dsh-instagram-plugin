@@ -15,6 +15,22 @@
 >
 > Fully inherits session state from `@luoyi-dsh/instagram-mcp` with zero duplicated credentials. The web management console is available via `client.js`.
 
+> [!CAUTION]
+> ### ⚠️ CRITICAL WARNING & DISCLAIMER
+> 1. **Violation of Instagram Terms of Service & Community Guidelines**:
+>    This plugin and its underlying automation routines interact with Instagram via unofficial reverse-engineered APIs, which **expressly violates Instagram / Meta's Terms of Use and Community Guidelines**.
+> 2. **DO NOT USE YOUR PERSONAL / PRIMARY ACCOUNT**:
+>    **Never use your personal, primary, or business-critical Instagram account!** Automated activity is actively detected by Meta's behavioral anti-bot systems. Running automated scripts carries an extreme risk of **Action Blocks, Challenge Checkpoints, temporary lockouts, and PERMANENT ACCOUNT SUSPENSION / BANNING**.
+> 3. **Use Dedicated Burner / Alt Accounts & Clean Proxies**:
+>    Only run this plugin using disposable test accounts (burner/alt accounts) paired with clean residential proxies. Do not frequently jump across IPs or geographies.
+> 4. **Built-in Anti-Risk Safeguards**:
+>    - **Per-Run Action Caps**: Limits comments to at most 1 per patrol round to prevent burst posting.
+>    - **Multi-Tier Rate Limiting**: Enforces strict hourly limits (`maxHourlyPatrolComments: 3`, `maxHourlyMentionReplies: 5`, `maxHourlyDmReplies: 8`) and daily limits.
+>    - **Humanized Jitter & Pacing**: Minimum 30s pause between comments plus 6–15s randomized jitter delays.
+>    - **Circuit Breaker Cooldown**: Automatically pauses all operations for 30 minutes if an Action Block or rate limit is encountered.
+> 5. **Disclaimer**:
+>    This project is provided strictly for educational and technical research purposes. The authors and contributors assume **no responsibility or liability** for any account bans, penalties, or losses resulting from its use. Use entirely at your own risk!
+
 ---
 
 ## 🚀 Installation

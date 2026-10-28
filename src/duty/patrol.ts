@@ -16,9 +16,12 @@ import { LedgerManager } from '../lib/ledger.js'
 import { callLlmForInstagram, isAiGeneratedContent } from '../lib/llm.js'
 import {
   ANTI_AI_FLAVOR_PRIMARY_RULE,
+  CONTENT_SPECIFIC_RECOMMEND_RULE,
   PROMPT_INJECTION_DEFENSE_RULE,
   buildFeiyuMoodPromptBlock,
-  stripAiFlavorArtifacts,
+  loadOwnerMemoryInterestContext,
+  parseRecommendationLlmOutput,
+  sanitizeRecommendationComment,
   wrapUntrustedContent,
 } from '../lib/companion.js'
 import type { InstagramMcpClient } from '@luoyi-dsh/instagram-mcp'
@@ -93,18 +96,45 @@ export async function executePatrolDuty(
     return { ok: true, processedPosts: 0, recommendedCount: 0, notes }
   }
 
-  // 組裝搜尋任務佇列
+  // 讀取與用戶對話的記憶庫 (dsh-fish-memory)，動態提取用戶可能感興趣的話題與記憶脈絡
+  const ownerMemory = loadOwnerMemoryInterestContext(targetMentionUser)
+  if (ownerMemory.hasMemories) {
+    log(
+      `[Patrol] 🧠 已載入與主人 (@${targetMentionUser}) 的對話記憶 ${ownerMemory.memoryCount} 條${
+        ownerMemory.dynamicKeywords.length > 0
+          ? `，動態延伸檢索詞: [${ownerMemory.dynamicKeywords.slice(0, 3).join(', ')}]`
+          : ''
+      }`
+    )
+  }
+
+  // 組裝搜尋任務佇列（結合設定關鍵字 + 從對話記憶動態提取的用戶興趣詞）
   const searchTasks: Array<{ mode: 'fuzzy' | 'tag'; term: string }> = []
+  const seenSearchTerms = new Set<string>()
   if (useFuzzy) {
+    // 優先穿插最多 2 個從用戶近期對話記憶動態提取的主題詞
+    for (const memKw of ownerMemory.dynamicKeywords.slice(0, 2)) {
+      const clean = String(memKw || '').trim()
+      if (clean && !seenSearchTerms.has(clean.toLowerCase())) {
+        seenSearchTerms.add(clean.toLowerCase())
+        searchTasks.push({ mode: 'fuzzy', term: clean })
+      }
+    }
     for (const kw of fuzzyList) {
       const clean = String(kw || '').trim()
-      if (clean) searchTasks.push({ mode: 'fuzzy', term: clean })
+      if (clean && !seenSearchTerms.has(clean.toLowerCase())) {
+        seenSearchTerms.add(clean.toLowerCase())
+        searchTasks.push({ mode: 'fuzzy', term: clean })
+      }
     }
   }
   if (useTags) {
     for (const tag of hashtags) {
       const clean = String(tag || '').replace(/^#/, '').trim()
-      if (clean) searchTasks.push({ mode: 'tag', term: clean })
+      if (clean && !seenSearchTerms.has(`#${clean.toLowerCase()}`)) {
+        seenSearchTerms.add(`#${clean.toLowerCase()}`)
+        searchTasks.push({ mode: 'tag', term: clean })
+      }
     }
   }
 
@@ -204,60 +234,90 @@ export async function executePatrolDuty(
           }
         }
 
-        // 6. 調用 AI 評估貼文價值（第一條件：去 AI 味 + 同步 dsh-feiyu-mood 心情指標 + 防注入邊界）
+        // 6. 補齊貼文/Reel 完整上下文（字幕、視覺描述、音訊、圖片 URL），確保推薦語句能針對該貼文的具體內容生成
+        let fullCaption = caption
+        let postTitle = String(post.title || '')
+        let a11yCaption = String(post.accessibility_caption || '')
+        let videoSubtitles = String(post.video_subtitles || '')
+        let audioInfo = String(post.audio_info || '')
+        let imageUrls: string[] = Array.isArray(post.image_urls) ? [...post.image_urls] : []
+        if (post.thumbnail_url && !imageUrls.includes(post.thumbnail_url)) {
+          imageUrls.unshift(post.thumbnail_url)
+        }
+        let fetchedContextComments: any[] | null = null
+
+        if (fullCaption.length < 80 || imageUrls.length === 0 || post.media_type === 2 || post.product_type === 'clips') {
+          try {
+            const detailCtx: any = await mcp.igGetPostContext(pk, 12)
+            const dp: any = detailCtx?.media || detailCtx?.post
+            if (dp) {
+              if (dp.caption && String(dp.caption).length > fullCaption.length) fullCaption = String(dp.caption)
+              if (dp.title) postTitle = String(dp.title)
+              if (dp.accessibility_caption) a11yCaption = String(dp.accessibility_caption)
+              if (dp.video_subtitles) videoSubtitles = String(dp.video_subtitles)
+              if (dp.audio_info) audioInfo = String(dp.audio_info)
+              if (Array.isArray(dp.image_urls) && dp.image_urls.length > 0) {
+                imageUrls = dp.image_urls
+              } else if (dp.thumbnail_url && !imageUrls.includes(dp.thumbnail_url)) {
+                imageUrls.push(dp.thumbnail_url)
+              }
+            }
+            if (Array.isArray(detailCtx?.comments)) {
+              fetchedContextComments = detailCtx.comments
+            }
+          } catch {}
+        }
+
+        // 7. 調用 AI 評估貼文價值（結合與用戶對話的記憶選片 + 針對貼文真實細節動態生成推坑留言）
         const moodBlock = buildFeiyuMoodPromptBlock(true)
         const basePersona = config.patrolPersonaPrompt || '你是一個眼光敏銳、說話自然隨性的朋友。'
         const systemPrompt = `${ANTI_AI_FLAVOR_PRIMARY_RULE}
+
+${CONTENT_SPECIFIC_RECOMMEND_RULE}
 
 ${PROMPT_INJECTION_DEFENSE_RULE}
 
 【角色人設】：
 ${basePersona}
-${moodBlock ? `\n${moodBlock}` : ''}`
-        const evalPrompt = `請評估以下 Instagram 貼文是否具備分享與推薦價值：
+${moodBlock ? `\n${moodBlock}` : ''}
+${ownerMemory.promptBlock ? `\n${ownerMemory.promptBlock}` : ''}`
+
+        const extraDetails: string[] = []
+        if (postTitle) extraDetails.push(`標題：${postTitle}`)
+        if (a11yCaption) extraDetails.push(`畫面視覺描述：${a11yCaption}`)
+        if (videoSubtitles) extraDetails.push(`影片字幕內容：${videoSubtitles.slice(0, 400)}`)
+        if (audioInfo) extraDetails.push(`背景音訊：${audioInfo}`)
+
+        const evalPrompt = `請根據「與主人的對話記憶脈絡」與主人的興趣偏好，評估以下 Instagram 貼文/Reel 是否真的是主人會喜歡的內容，並針對這則貼文的具體內容動態生成推坑語句：
 搜尋主題：${tag}
-作者：@${authorName || 'unknown'}
+作者：@${authorName || 'unknown'} (${post.user?.full_name || ''})
+類型：${post.media_type === 2 || post.product_type === 'clips' ? 'Reel 短片/影片' : '圖文貼文'}
 按讚數：${likes} | 留言數：${comments}
-內文摘要：
-${wrapUntrustedContent('post_caption', caption.slice(0, 600))}
+${extraDetails.length > 0 ? extraDetails.join('\n') + '\n' : ''}貼文內文：
+${wrapUntrustedContent('post_caption', fullCaption.slice(0, 800))}
 
-【重要排除原則】：
-- 嚴格禁止推薦任何「AI 生成的影片、AI 動畫、AI 繪圖/算圖、AI 配音或 AI 生成的農場文章」（例如 Sora、Runway、Midjourney、Stable Diffusion、Kling、可靈、AIGC 等）。若懷疑或發現為 AI 生成的創作/影片/動畫/文章，請務必回答 "recommend": false！
-- 只推薦真實人類創作的作品、真實軟體開發/技術實踐、優質工具或有深度的原創見解。
-- 推薦語句 (reason) 必須遵守【第一條件：絕對不要 AI 味】，像真人朋友在 IG 隨手標記分享好東西一樣自然（例如「這篇講得蠻透的」、「這個實作思路很有意思」），嚴禁寫得像廣告文案或客服摘要！
+【選片與推坑留言生成要求】：
+1. 【根據對話記憶動態選片】：先對照上方與主人的對話記憶與喜好，判斷主人會不會對這則貼文/Reel 的具體內容感興趣。如果只是泛泛的流量文或與主人興趣無關，請判定不推薦 ("recommend": false)。
+2. 【嚴格排除 AI 生成內容】：嚴格禁止推薦任何「AI 生成的影片、AI 動畫、AI 繪圖/算圖、AI 配音或 AI 生成文章」（如 Sora、Runway、Midjourney、Stable Diffusion、Kling、可靈、AIGC 等）。
+3. 【留言必須緊扣貼文具體細節，嚴禁空泛說很推薦】：若決定推薦，你的推坑留言 (comment) 必須直接點出這則貼文/Reel 裡的某個具體細節、畫面特點、技術做法或耐人尋味的地方（只有看過這則貼文才說得出來的話），絕對禁止寫「很推薦」、「強烈推薦」、「值得一看」、「乾貨滿滿」、「這篇關於…很值得一看」等罐頭套話！
 
-請嚴格以 JSON 格式回答：
-{"recommend": true 或 false, "reason": "35字內無 AI 味的自然口語推坑留言（不要加 @用戶名）"}`
+你可以回覆 JSON 格式：
+{"recommend": true 或 false, "score": 0到100, "comment": "針對這則貼文具體內容細節的自然推坑話語（不要加 @用戶名，嚴禁說很推薦/值得一看）"}
+（或者依你的人設直接回覆：「85分 <針對這則貼文具體內容細節的那一句推坑>」；若不推薦則回覆「不推薦」）`
 
         let llmReply = ''
         try {
-          llmReply = await callLlmForInstagram(ctx, config, systemPrompt, evalPrompt, log)
+          llmReply = await callLlmForInstagram(ctx, config, systemPrompt, evalPrompt, log, imageUrls.slice(0, 2))
         } catch (llmErr: any) {
           log(`[Patrol] ⚠️ AI 評估呼叫失敗 (${llmErr.message})，跳過貼文 ${pk}`)
           continue
         }
 
-        let isRecommend = false
-        let reason = ''
+        const parsedEval = parseRecommendationLlmOutput(llmReply, 80, targetMentionUser)
+        const isRecommend = parsedEval.isRecommend
+        const reason = parsedEval.commentBody
 
-        try {
-          const jsonMatch = llmReply.match(/\{[\s\S]*\}/)
-          if (jsonMatch) {
-            const parsed = JSON.parse(jsonMatch[0])
-            isRecommend = Boolean(parsed.recommend)
-            if (parsed.reason) reason = stripAiFlavorArtifacts(String(parsed.reason).trim())
-          } else {
-            const scoreMatch = llmReply.match(/([89]\d|100)\s*分/)
-            if (scoreMatch) {
-              isRecommend = true
-              reason = llmReply.replace(/^[0-9]+\s*分[：:、，,\s]*/, '').trim()
-            }
-          }
-        } catch {
-          isRecommend = llmReply.includes('"recommend": true') || llmReply.includes('recommend: true')
-        }
-
-        // 7. 若符合推薦標準，進行發送前二次防重檢查並留言推坑
+        // 8. 若符合推薦標準且具備針對貼文內容的具體推坑語句，進行發送前二次防重檢查並留言推坑
         if (isRecommend && reason) {
           if (ledger.hasEverSentPost(post)) {
             log(`[Patrol] ⏭️ 貼文/Reel (${pk}) 已經在其他任務發送過推坑留言，攔截重複發送！`)
@@ -270,8 +330,10 @@ ${wrapUntrustedContent('post_caption', caption.slice(0, 600))}
             .trim()
             .toLowerCase()
           try {
-            const ctxCheck = await mcp.igGetPostContext(pk, 15)
-            const existingComments: any[] = ctxCheck?.comments || []
+            const existingComments: any[] =
+              fetchedContextComments !== null
+                ? fetchedContextComments
+                : (await mcp.igGetPostContext(pk, 15))?.comments || []
             const alreadyCommented = existingComments.some((c: any) => {
               const cu = String(c.user?.username || '').toLowerCase()
               const ct = String(c.text || '').toLowerCase()
@@ -293,14 +355,23 @@ ${wrapUntrustedContent('post_caption', caption.slice(0, 600))}
             await new Promise((r) => setTimeout(r, waitSec * 1000))
           }
 
-          let commentText =
-            config.recommendTemplate || '@{targetUser} 這篇關於 #{hashtag} 的內容很值得一看：{summary}'
-          commentText = commentText
+          const cleanReason = sanitizeRecommendationComment(reason, targetMentionUser)
+          if (!cleanReason) {
+            log(`[Patrol] ⏭️ 貼文 ${pk} 推坑語句過於空泛或含推薦套話，拒絕發送`)
+            continue
+          }
+
+          let rawTpl = String(config.recommendTemplate || '@{targetUser} {summary}').trim()
+          if (/值得一看|很推薦|強烈推薦|乾貨滿滿/.test(rawTpl)) {
+            rawTpl = '@{targetUser} {summary}'
+          }
+          const commentText = rawTpl
             .replace('{targetUser}', targetMentionUser)
             .replace('{hashtag}', tag)
-            .replace('{summary}', reason)
+            .replace('{summary}', cleanReason)
+            .trim()
 
-          log(`[Patrol] 貼文 ${pk} 通過評估，發布推坑留言: ${commentText}`)
+          log(`[Patrol] 貼文 ${pk} 通過記憶與內容評估 (${parsedEval.score}分)，發布動態推坑留言: ${commentText}`)
 
           const postRes = await mcp.igPostComment({
             media_pk: pk,

@@ -19,7 +19,7 @@
  * ============================================================================
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -666,4 +666,406 @@ export function getSocialFishMemoryStats(platformPrefix: 'social_ig_' | 'social_
     moodSnapshot: readFeiyuMoodSnapshot(),
   }
 }
+
+// ============================================================================
+// 5. 根據與用戶對話的記憶動態選片 + 針對貼文真實內容動態生成推坑留言 (無套話鐵則)
+// ============================================================================
+
+export const CONTENT_SPECIFIC_RECOMMEND_RULE = `【推坑留言內容動態生成鐵則（嚴禁空泛說「很推薦 / 值得一看 / 乾貨滿滿」）】
+1. 你的推坑留言（@主人 後面的那句話）必須 100% 根據「這則貼文或 Reel 裡面的具體內容」動態生成！
+2. 必須點出這則貼文/Reel 裡只有看過的人才說得出來的一個具體細節、畫面亮點、某個做法、某個詞、某個反差或技術點（例如：「那個護目鏡的反光好像是用圖層混合疊出來的，邊緣卻收得很乾淨」、「他把狀態機拆成三層去接 WebSocket，那段重連處理寫得挺聰明的」）。
+3. 絕對禁止任何萬金油推薦套話！嚴禁出現：「很推薦」、「強烈推薦」、「特別推薦」、「非常推薦」、「值得一看」、「很值得看」、「推薦你看」、「乾貨滿滿」、「推推」、「大推」、「不能錯過」、「分享非常扎實」、「分析得很透徹」、「這篇關於…」、「這支影片…」等放在哪篇貼文都通用的廢話！
+4. 直接從你在貼文裡注意到的那個具體細節開口，像跟很熟的主人隨口聊起眼前看到的東西，不超過兩句話，自然收尾。`
+
+export interface OwnerMemoryInterestContext {
+  hasMemories: boolean
+  memoryCount: number
+  memoryLines: string[]
+  dynamicKeywords: string[]
+  promptBlock: string
+}
+
+const NOISE_MEMORY_TAGS = new Set([
+  '時間',
+  '今日',
+  '明日',
+  '昨日',
+  '今天',
+  '明天',
+  '昨天',
+  '早上',
+  '下午',
+  '晚上',
+  '日程',
+  '通知',
+  '確認',
+  '設定',
+  '開啟',
+  '關閉',
+  '測試',
+  '問題',
+  '回覆',
+  '訊息',
+  '對話',
+  '自己',
+  '用戶',
+  '主人',
+  '洛依',
+  '飛魚',
+  '安排',
+  '提醒',
+  '目前',
+  '現在',
+  '開始',
+  '結束',
+  '完成',
+  '處理',
+  '需要',
+  '可以',
+  '已經',
+  '沒有',
+  '一個',
+  '這個',
+  '那個',
+  'asia',
+  'taipei',
+  'utc',
+  'gmt',
+  'instagram',
+  'reels',
+  'reel',
+  'post',
+])
+
+/**
+ * 讀取與主人（用戶）對話的記憶庫 (~/.dsh/fish-memory/session-*.json 及與主人的互動記憶)，
+ * 用於在巡查/滾動推薦時「根據與用戶對話的記憶去動態選擇用戶可能喜歡的內容才做推薦」。
+ *
+ * 安全設計：
+ * - 此函式僅供「挑選推薦給主人的貼文/Reel」使用（絕不用於回覆外部陌生網友的 DM/RM）。
+ * - 絕不讀取陌生網友的 `social_ig_*` / `social_dc_*` 記憶檔。
+ * - Prompt 內嵌嚴格隱私紅線：記憶僅用於在心裡判斷「主人對這篇內容會不會感興趣」，
+ *   公開留言時嚴禁把主人的私人行程、作息或隱私細節寫進留言區。
+ */
+export function loadOwnerMemoryInterestContext(masterUsername?: string): OwnerMemoryInterestContext {
+  const emptyResult: OwnerMemoryInterestContext = {
+    hasMemories: false,
+    memoryCount: 0,
+    memoryLines: [],
+    dynamicKeywords: [],
+    promptBlock: '',
+  }
+
+  try {
+    const fishDir = join(getDshHomeDir(), 'fish-memory')
+    if (!existsSync(fishDir)) return emptyResult
+
+    const cleanMaster = String(masterUsername || '')
+      .toLowerCase()
+      .replace(/^@/, '')
+      .replace(/[^a-z0-9_-]/g, '_')
+      .trim()
+
+    const files = readdirSync(fishDir).filter((f) => {
+      if (!f.endsWith('.json')) return false
+      // 讀取與用戶對話的私人/主會話記憶 (session-*.json / global.json / default.json)
+      if (f.startsWith('session-') || f === 'global.json' || f === 'default.json') {
+        return true
+      }
+      // 若有與主人本人的 IG/DC 對話記憶，也一併納入偏好判斷（排除其他外部陌生網友的 social_* 檔案）
+      if (cleanMaster && (f === `social_ig_dm_${cleanMaster}.json` || f === `social_ig_rm_${cleanMaster}.json`)) {
+        return true
+      }
+      return false
+    })
+
+    if (files.length === 0) return emptyResult
+
+    const nowMs = Date.now()
+    const allMemories: Array<FishMemoryItem & { related?: string[]; _score: number }> = []
+
+    for (const file of files) {
+      try {
+        const raw = JSON.parse(readFileSync(join(fishDir, file), 'utf-8'))
+        const list: any[] = Array.isArray(raw?.memories) ? raw.memories : []
+        for (const m of list) {
+          const text = String(m?.text || '').trim()
+          if (!text || text.length < 4) continue
+          const createdMs = new Date(m.at || m.createdAt || nowMs).getTime()
+          const ageDays = Math.max(0, (nowMs - (Number.isFinite(createdMs) ? createdMs : nowMs)) / 86400000)
+          const recency = Math.exp(-(Math.LN2 * ageDays) / 21)
+          const imp = clamp(Number(m.importance ?? 0.5), 0, 1)
+          const isProfile = m.category === 'stable_profile' ? 0.25 : 0
+          const score = 0.5 * recency + 0.35 * imp + isProfile
+          allMemories.push({
+            ...m,
+            text,
+            tags: Array.isArray(m.tags) ? m.tags : [],
+            related: Array.isArray(m.related) ? m.related : [],
+            _score: score,
+          })
+        }
+      } catch {}
+    }
+
+    if (allMemories.length === 0) return emptyResult
+
+    // 依綜合權重排序並去重
+    allMemories.sort((a, b) => b._score - a._score)
+    const seenTexts = new Set<string>()
+    const topMemories: Array<FishMemoryItem & { related?: string[]; _score: number }> = []
+    for (const m of allMemories) {
+      const norm = m.text.replace(/\s+/g, ' ').trim()
+      if (seenTexts.has(norm)) continue
+      seenTexts.add(norm)
+      topMemories.push(m)
+      if (topMemories.length >= 12) break
+    }
+
+    const memoryLines = topMemories.map((m) => {
+      const when = formatRelativeTimeLabel(m.at || m.createdAt, nowMs)
+      return when ? `- (${when}) ${m.text}` : `- ${m.text}`
+    })
+
+    // 從記憶的 related、tags 與內文中提取可用於動態探索用戶興趣的關鍵詞
+    const keywordScores = new Map<string, number>()
+    const addCandidateKw = (rawKw: string, weight: number) => {
+      const kw = String(rawKw || '')
+        .trim()
+        .replace(/^[#@.-]+|[.-]+$/g, '')
+      if (!kw || kw.length < 2 || kw.length > 24) return
+      if (/^\d+$/.test(kw)) return
+      if (/^(dsh-|raxytw|scroll|plugin|mcp)/i.test(kw)) return
+      if (cleanMaster && kw.toLowerCase().includes(cleanMaster)) return
+      if (NOISE_MEMORY_TAGS.has(kw.toLowerCase()) || NOISE_MEMORY_TAGS.has(kw)) return
+      // 過濾純時間或日期詞
+      if (/^(\d+點|\d+分|\d+月|\d+日|週[一二三四五六日天]|星期[一二三四五六日天])$/.test(kw)) return
+      const key = kw.toLowerCase()
+      keywordScores.set(key, (keywordScores.get(key) || 0) + weight)
+    }
+
+    for (const m of topMemories) {
+      // 1. 優先提取完整英文技術/作品/工具詞彙 (如 rust, blender, live2d, kemono, deepseek, shader 等)
+      const engWords = m.text.match(/\b[a-zA-Z][a-zA-Z0-9+#.-]{2,18}\b/g) || []
+      for (const ew of engWords) {
+        if (!/^(http|https|www|com|org|net|the|and|for|with|from|that|this)$/i.test(ew)) {
+          addCandidateKw(ew, 2.5 * m._score)
+        }
+      }
+      // 2. 提取書名號、引號中的專有名詞或作品/主題名稱
+      const quoted = m.text.match(/[《「『"]([^》」』"\r\n]{2,14})[》」』"]/g) || []
+      for (const q of quoted) {
+        const inner = q.slice(1, -1).trim()
+        if (inner && inner.length <= 10 && !/[，。！？、：；]/.test(inner)) {
+          addCandidateKw(inner, 2.0 * m._score)
+        }
+      }
+      // 3. 提取 related 與 tags 中有意義的實體詞
+      for (const rel of m.related || []) {
+        addCandidateKw(rel, 1.5 * m._score)
+      }
+      for (const tag of m.tags || []) {
+        if (tag.length >= 2) {
+          addCandidateKw(tag, 0.8 * m._score)
+        }
+      }
+    }
+
+    const dynamicKeywords = Array.from(keywordScores.entries())
+      .filter(([, sc]) => sc >= 0.9)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([k]) => k)
+
+    const promptBlock = `【與主人的過往對話記憶脈絡 (dsh-fish-memory，用於動態選擇主人真正可能喜歡的內容)】：
+${memoryLines.join('\n')}
+- 【記憶驅動選片準則】：請結合上方「與用戶對話的記憶」與主人的興趣偏好，動態判斷這則貼文或 Reel 是否契合主人近期關注的事物、聊過的話題、技術方向或審美喜好。只有當你從對話記憶與偏好中真心覺得「這個主人看到一定會有興趣/會喜歡」時才決定推薦！
+- 【隱私保護紅線】：上方對話記憶僅供你在心裡判斷選片口味，撰寫公開留言時必須 100% 聚焦於「這則貼文/Reel 本身的內容細節」，絕對不可把主人的私人行程、作息時間或隱私對話直接寫在公開留言區！`
+
+    return {
+      hasMemories: true,
+      memoryCount: topMemories.length,
+      memoryLines,
+      dynamicKeywords,
+      promptBlock,
+    }
+  } catch {
+    return emptyResult
+  }
+}
+
+/**
+ * 清洗並驗證推薦留言文字：
+ * 1. 剔除所有「這篇關於 #xxx 的內容很值得一看」、「很推薦」、「強烈推薦」、「乾貨滿滿」、「推推」等模板套話。
+ * 2. 移除重複的 @targetUser 前綴（由外層統一加上 `@{targetUser} `）。
+ * 3. 若清洗後發現整句話只是空泛套話、沒有針對貼文內容的具體描述，返回空字串 `''` 以阻止發送劣質罐頭留言。
+ */
+export function sanitizeRecommendationComment(rawComment: string, targetUser?: string): string {
+  if (!rawComment) return ''
+  let text = stripAiFlavorArtifacts(rawComment)
+
+  // 移除可能殘留的評分前綴，例如 "85分 "、"90分："、"[88分]"
+  text = text.replace(/^\[?\d{1,3}\s*分\]?[：:、，,\s-]*/g, '').trim()
+
+  // 移除開頭已經帶有的 @targetUser（避免外層拼接時變成 @@user 或重複 @）
+  if (targetUser) {
+    const cleanTarget = targetUser.replace(/^@/, '').trim()
+    if (cleanTarget) {
+      const escaped = cleanTarget.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      text = text.replace(new RegExp(`^@${escaped}[\\s，,：:、]+`, 'i'), '').trim()
+    }
+  }
+  text = text.replace(/^@[\p{L}\p{N}._]+[\s，,：:、]+/u, '').trim()
+
+  // 移除舊版模板前綴：「這篇關於 #xxx 的內容很值得一看：」
+  text = text
+    .replace(/^這篇關於\s*#?[^\s：:，,]+?\s*的內容(很|非常|超)?值得一看[：:，,\s]*/g, '')
+    .replace(/^(這篇|這則|這支)(貼文|影片|作品|內容)?(關於\s*[^\s，,：:]+?\s*的(內容|分享))?(真的|非常|特別|很)?(值得一看|推薦你看|推薦給你|強烈推薦|很推薦)[：:，,！!。\s]*/g, '')
+    .replace(/^發現這篇(乾貨)?對你的方向很有啟發[，,。！!\s]*(特地\s*@\s*你存起來[！!。\s]*)?/g, '')
+    .replace(/^這篇思路與案例分析得很透徹[，,。！!\s]*內容很硬核[，,。！!\s]*(推推[！!。\s]*)?/g, '')
+    .trim()
+
+  // 移除句尾常見的機械式推薦尾巴：「，很推薦你看！」、「，強烈推薦！」、「，值得一看！」、「，推推！」
+  text = text
+    .replace(
+      /[，,。！!；;\s]*(真的|非常|特別|強烈|真心|超|很)*(很推薦給?你看|推薦給?你看|推薦給?你|很推薦|強烈推薦|特別推薦|值得一看|很值得看|乾貨滿滿|不能錯過|分享非常扎實|分析得很透徹|推推|大推|特地\s*@\s*你存起來)[！!~～。]*$/g,
+      ''
+    )
+    .trim()
+
+  // 移除句中孤立的「很推薦」、「值得一看」、「乾貨滿滿」套話子句
+  text = text
+    .replace(/(這篇|這支影片|這個)?(真的|非常|特別)?(很推薦|強烈推薦|值得一看|乾貨滿滿)[，,、\s]*/g, '')
+    .trim()
+
+  // 清除首尾多餘標點
+  text = text.replace(/^[：:，,、；;\s]+/, '').trim()
+
+  // 檢查是否只剩下空洞套話或字數過短（不足 5 個字無法描述任何貼文具體細節）
+  if (!text || text.length < 5) return ''
+  if (
+    /^(很推薦|推薦你看|值得一看|分享給你|這篇很棒|這篇不錯|內容很扎實|內容很硬核|留給你看看|給你看看)[！!。~～\s]*$/.test(
+      text
+    )
+  ) {
+    return ''
+  }
+
+  return text
+}
+
+/**
+ * 解析 LLM 的選片評估輸出（同時相容 JSON 格式與「85分 + 針對貼文內容的一句話」純文字格式）
+ */
+export function parseRecommendationLlmOutput(
+  llmReply: string,
+  minScore: number = 80,
+  targetUser?: string
+): {
+  isRecommend: boolean
+  score: number
+  commentBody: string
+  reason: string
+  rejectionReason: string
+} {
+  const raw = String(llmReply || '').trim()
+  if (!raw) {
+    return {
+      isRecommend: false,
+      score: 0,
+      commentBody: '',
+      reason: '',
+      rejectionReason: 'LLM 返回空結果',
+    }
+  }
+
+  // 1. 嘗試解析 JSON 格式
+  const jsonMatch = raw.match(/\{[\s\S]*\}/)
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0])
+      const score = Number(parsed.score ?? (parsed.recommend || parsed.isWorthy ? 85 : 30))
+      const rawApprove =
+        parsed.recommend !== undefined
+          ? Boolean(parsed.recommend)
+          : parsed.isWorthy !== undefined
+          ? Boolean(parsed.isWorthy)
+          : score >= minScore
+      const isApprove = rawApprove && score >= minScore
+
+      const rawComment = String(
+        parsed.comment || parsed.hookPhrase || parsed.commentText || parsed.reason || ''
+      ).trim()
+      const commentBody = isApprove ? sanitizeRecommendationComment(rawComment, targetUser) : ''
+
+      if (isApprove && commentBody) {
+        return {
+          isRecommend: true,
+          score,
+          commentBody,
+          reason: String(parsed.selectionReason || parsed.summary || parsed.reason || commentBody).trim(),
+          rejectionReason: '',
+        }
+      }
+
+      return {
+        isRecommend: false,
+        score,
+        commentBody: '',
+        reason: '',
+        rejectionReason: String(
+          parsed.rejectionReason ||
+            (isApprove && !commentBody
+              ? '生成的推坑語句過於空泛或含套話，未針對貼文具體內容描述，不予發送'
+              : '未達推薦標準或與主人記憶興趣不符')
+        ),
+      }
+    } catch {}
+  }
+
+  // 2. 相容「85分 <針對貼文內容的一句推坑>」或「不推薦 / PASS / 低分」純文字格式（如洛依人設 Prompt 要求的格式）
+  if (/^(不推薦|不推|跳過|PASS|NO|FALSE)/i.test(raw)) {
+    return {
+      isRecommend: false,
+      score: 20,
+      commentBody: '',
+      reason: '',
+      rejectionReason: raw.slice(0, 80),
+    }
+  }
+
+  const scoreMatch = raw.match(/(?:^|\b)(100|[1-9]\d)\s*分(?:[：:、，,\s-]*([\s\S]+))?/)
+  if (scoreMatch) {
+    const score = Number(scoreMatch[1])
+    const restText = String(scoreMatch[2] || raw.replace(scoreMatch[0], '')).trim()
+    if (score >= minScore && restText && !/^(不推薦|不推|跳過|PASS)/i.test(restText)) {
+      const commentBody = sanitizeRecommendationComment(restText, targetUser)
+      if (commentBody) {
+        return {
+          isRecommend: true,
+          score,
+          commentBody,
+          reason: `符合主人記憶偏好 (${score}分)：${commentBody}`,
+          rejectionReason: '',
+        }
+      }
+    }
+    return {
+      isRecommend: false,
+      score,
+      commentBody: '',
+      reason: '',
+      rejectionReason: `評分 (${score}分) 未達門檻 (${minScore}分) 或無具體貼文評論內容`,
+    }
+  }
+
+  return {
+    isRecommend: false,
+    score: 0,
+    commentBody: '',
+    reason: '',
+    rejectionReason: 'LLM 未給出明確高分與具體貼文評論',
+  }
+}
+
 

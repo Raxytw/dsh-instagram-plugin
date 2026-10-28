@@ -214,7 +214,13 @@ export function sanitizeConfig(raw: any): InstagramPluginConfig {
     requireKeywords: Array.isArray(c.requireKeywords) ? c.requireKeywords : defaultConfig.requireKeywords,
     maxDailyPatrolComments: unwrapValue(c.maxDailyPatrolComments, defaultConfig.maxDailyPatrolComments),
     patrolPersonaPrompt: unwrapValue(c.patrolPersonaPrompt, defaultConfig.patrolPersonaPrompt),
-    recommendTemplate: unwrapValue(c.recommendTemplate, defaultConfig.recommendTemplate),
+    recommendTemplate: (() => {
+      const rawTpl = String(unwrapValue(c.recommendTemplate, defaultConfig.recommendTemplate) || '').trim()
+      if (!rawTpl || /值得一看|很推薦|強烈推薦|乾貨滿滿/.test(rawTpl)) {
+        return '@{targetUser} {summary}'
+      }
+      return rawTpl
+    })(),
 
     mentionReplyEnabled: unwrapValue(c.mentionReplyEnabled, defaultConfig.mentionReplyEnabled),
     mentionIntervalMinutes: unwrapValue(c.mentionIntervalMinutes, defaultConfig.mentionIntervalMinutes),
